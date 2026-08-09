@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fnai"
+version = "0.1.0"
+description = "Minimal Python client for the functionalAI public API"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+authors = [{ name = "Ferrous Labs" }]
+keywords = ["functionalAI", "fnai", "llm", "ai-functions"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Topic :: Software Development :: Libraries",
+]
+# Zero runtime dependencies (stdlib only).
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/ferrouslabs-git/fnai-public"
+Repository = "https://github.com/ferrouslabs-git/fnai-public"
+Issues = "https://github.com/ferrouslabs-git/fnai-public/issues"
+
+[tool.setuptools]
+py-modules = ["fnai"]
