@@ -180,6 +180,13 @@ class Functions {
     return this.h.request("GET", `/api/functions/${fnId}/health`,
                           undefined, { window_hours: windowHours });
   }
+
+  /** `fn types` — caller-side types for the function's deployed contract. */
+  types(fnId: number, lang: "typescript" | "python" = "typescript"):
+      Promise<S["TypesOut"]> {
+    return this.h.request("GET", `/api/functions/${fnId}/types`,
+                          undefined, { lang });
+  }
 }
 
 class Versions {

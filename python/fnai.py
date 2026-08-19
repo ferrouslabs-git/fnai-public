@@ -163,6 +163,11 @@ class _Functions:
         return self._h("GET", f"/api/functions/{fn_id}/health",
                        query={"window_hours": window_hours})
 
+    def types(self, fn_id: int, lang: str = "python") -> dict:
+        """`fn types` — caller-side types for the function's deployed contract.
+        Returns {language, function, version, source}; write `source` to a file."""
+        return self._h("GET", f"/api/functions/{fn_id}/types", query={"lang": lang})
+
 
 class _Versions:
     def __init__(self, http: _Http):

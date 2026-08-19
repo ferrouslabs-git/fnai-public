@@ -302,6 +302,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/functions/{fn_id}/types": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Function Types
+         * @description `fn types` — caller-side types (TS interface / Python TypedDict) for the
+         *     function's contract. Prefers the ACTIVE deployment's version (exactly what
+         *     /v1 validates against), else the latest version, else fn-level schemas.
+         */
+        get: operations["function_types"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/versions/{v_id}/reject": {
         parameters: {
             query?: never;
@@ -2473,6 +2495,17 @@ export interface components {
              */
             created_at: string;
         };
+        /** TypesOut */
+        TypesOut: {
+            /** Language */
+            language: string;
+            /** Function */
+            function: string;
+            /** Version */
+            version?: number | null;
+            /** Source */
+            source: string;
+        };
         /** UploadResultOut */
         UploadResultOut: {
             /** Added */
@@ -3423,6 +3456,46 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    function_types: {
+        parameters: {
+            query?: {
+                lang?: string;
+            };
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                fn_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TypesOut"];
                 };
             };
             /** @description Validation Error */
