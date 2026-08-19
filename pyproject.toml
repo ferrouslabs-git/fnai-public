@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fnai"
-version = "0.1.0"
-description = "Minimal Python client for the functionalAI public API"
+version = "0.2.0"
+description = "Python client for functionalAI — invoke deployed functions and drive the management API"
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.10"

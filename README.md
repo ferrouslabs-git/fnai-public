@@ -1,6 +1,10 @@
 # fnai — Python client
 
-Zero-dependency client for the [functionalAI](https://fnai.dev) public API.
+Zero-dependency Python client for [functionalAI](https://fnai.dev). One file, two surfaces:
+
+- **`Function`** — invoke deployed functions (public runtime API, `fnk_…` invoke key)
+- **`Client`** — the management API: create functions, version, evaluate, deploy,
+  observe (`fnp_…` personal access token)
 
 Open-source home: **[ferrouslabs-git/fnai-public](https://github.com/ferrouslabs-git/fnai-public)**  
 (Source of truth for development: `sdk/python/` in the private `functionalAI` monorepo; synced here on release tags.)
@@ -40,7 +44,42 @@ else:
 
 See [`examples/quickstart.py`](examples/quickstart.py).
 
-## API surface
+## Management: the `Client`
+
+Everything you can do in the app, scriptable. Auth is a **personal access
+token**: in the app, open the avatar menu → **API tokens** → Mint (the
+`fnp_…` plaintext is shown once; it carries your normal permissions and can
+be revoked per token).
+
+```python
+from fnai import Client
+
+c = Client(token="fnp_…", base_url="https://staging.fnai.dev")
+
+fn = c.functions.create(slug="summarizer", name="Summarizer",
+                        input_schema=IN, output_schema=OUT)
+v = c.functions.create_version(fn["id"], snapshot=SNAPSHOT, message="v1")
+c.versions.playground(v["id"], input={"document": "…"})     # try before shipping
+c.versions.submit(v["id"]); c.versions.approve(v["id"])
+c.deployments.deploy(fn["id"], v["id"])
+
+key = c.keys.invoke.mint(fn["id"], name="prod")              # fnk_… shown once
+result = c.function(fn["slug"], api_key=key["key"]).run(document="…")
+
+plan = c.eval.plans.create(fn["id"], name="baseline")        # evaluation loop
+exp = c.eval.experiments.create(fn["id"], version_ids=[v["id"]],
+                                models=[{"name": "mock-small"}])
+c.eval.experiments.run(exp["id"])
+
+print(c.functions.health(fn["id"]))                          # observe
+```
+
+Namespaces: `functions` · `versions` · `eval.plans` / `eval.experiments` /
+`eval.scores` · `datasets` · `deployments` · `keys.provider` / `keys.invoke` ·
+`traces` · `auth.tokens`. Full walkthrough:
+[`examples/management.py`](examples/management.py).
+
+## API surface (runtime)
 
 | Method | HTTP | Purpose |
 |---|---|---|
