@@ -1,0 +1,22 @@
+{
+  "name": "fnai",
+  "version": "0.2.0",
+  "description": "TypeScript client for functionalAI — invoke deployed functions and drive the management API",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "dist/fnai.js",
+  "types": "dist/fnai.d.ts",
+  "files": ["dist", "schema.d.ts", "README.md"],
+  "scripts": {
+    "build": "tsc",
+    "check": "tsc --noEmit"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ferrouslabs-git/fnai-public"
+  },
+  "engines": { "node": ">=18" },
+  "devDependencies": {
+    "typescript": "^5.5.0"
+  }
+}

@@ -1,4 +1,4 @@
 synced_from=ferrouslabs-git/functionalAI
-path=sdk/python
-sha=d65c1ec97ab9f64b04e8b11bbfe7e2e44a610f89
-ref=sdk-v0.2.0 (manual sync — Actions token pending)
+path=sdk
+sha=6d563956c50f8922429bf77a8bb82c9f907a643b
+ref=manual-sync (dual-language layout)
