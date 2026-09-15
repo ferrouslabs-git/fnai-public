@@ -48,9 +48,7 @@ const c = new Client({ token: "fnp_…", baseUrl: "https://staging.fnai.dev" });
 const fn = await c.functions.create({ slug, name, input_schema, output_schema });
 const v = await c.functions.createVersion(fn.id, { snapshot, message: "v1" });
 await c.versions.playground(v.id, { input: { document: "…" } });
-await c.versions.submit(v.id);
-await c.versions.approve(v.id);
-await c.deployments.deploy(fn.id, v.id);
+await c.deployments.deploy(fn.id, v.id);   // deploy IS the gate — freezes the draft
 
 const key = await c.keys.invoke.mint(fn.id, "prod");       // fnk_… shown once
 const result = await c.function(fn.slug, key.key).run({ document: "…" });

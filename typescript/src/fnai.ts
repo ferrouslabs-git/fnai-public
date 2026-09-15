@@ -20,8 +20,7 @@
  *     const fn = await c.functions.create({ slug, name, input_schema, output_schema });
  *     const v = await c.functions.createVersion(fn.id, { snapshot, message: "v1" });
  *     await c.versions.playground(v.id, { input: { document: "…" } });
- *     await c.versions.submit(v.id); await c.versions.approve(v.id);
- *     await c.deployments.deploy(fn.id, v.id);
+ *     await c.deployments.deploy(fn.id, v.id);   // deploy IS the gate — freezes the draft
  *     const key = await c.keys.invoke.mint(fn.id, "prod");
  *
  * Types come from schema.d.ts, generated from the backend's OpenAPI schema by
@@ -35,7 +34,7 @@ import type { components } from "../schema.d.js";
 
 type S = components["schemas"];
 
-export const VERSION = "0.2.0";
+export const VERSION = "0.3.0";
 const DEFAULT_TIMEOUT_MS = 90_000; // server caps execution at 60s; transport headroom
 
 export class FnaiError extends Error {
@@ -89,6 +88,37 @@ class Http {
     }
     const raw = await resp.text();
     return (raw ? JSON.parse(raw) : undefined) as T;
+  }
+
+  /** Raw text in/out — for the YAML push/pull endpoints (REQ-44), which speak
+   *  text/yaml rather than JSON. Same auth/error handling as request(), just
+   *  no (de)serialization either direction. */
+  async requestText(method: string, path: string, body?: string,
+                    contentType = "text/yaml"): Promise<string> {
+    let resp: Response;
+    try {
+      resp = await fetch(this.base + path, {
+        method,
+        headers: {
+          Authorization: `Bearer ${this.token}`,
+          "Content-Type": contentType,
+          "User-Agent": `fnai-ts/${VERSION}`,
+        },
+        body,
+        signal: AbortSignal.timeout(this.timeoutMs),
+      });
+    } catch (e) {
+      throw new FnaiError(0, `cannot reach ${this.base}: ${(e as Error).message}`);
+    }
+    if (!resp.ok) {
+      let detail = resp.statusText;
+      try {
+        const parsed = (await resp.json()) as { detail?: unknown };
+        if (parsed && parsed.detail !== undefined) detail = String(parsed.detail);
+      } catch { /* non-JSON error body — keep statusText */ }
+      throw new FnaiError(resp.status, detail);
+    }
+    return resp.text();
   }
 }
 
@@ -187,6 +217,73 @@ class Functions {
     return this.h.request("GET", `/api/functions/${fnId}/types`,
                           undefined, { lang });
   }
+
+  // ── v2 DSL: push/pull a function as one YAML document (REQ-44/272/273) ──
+  // Deliberately thin: this SDK does not parse or validate the DSL itself —
+  // doing so would be exactly the "five separate guesses" problem PRD 09
+  // exists to end. The file's bytes go to the backend, which owns the one
+  // real parser (Definition.from_yaml) and the one real check
+  // (validate_definition); whatever it says is authoritative.
+
+  /** Push a function up from a local YAML file — the whole "define a
+   *  function" loop's first step (PRD 09's UX walkthrough). Throws
+   *  FnaiError(409, ...) naming every diagnostic code if the file doesn't
+   *  pass the backend's check, or if it's built on a stale version
+   *  (meta.version — see REQ-268). */
+  async createFromYaml(path: string): Promise<CreatedFunction> {
+    const fs = await import("node:fs/promises");
+    const text = await fs.readFile(path, "utf8");
+    return this.createFromYamlText(text);
+  }
+
+  /** Same as createFromYaml(), for YAML already in memory (e.g. after
+   *  editing what getYaml() returned) rather than freshly read from disk. */
+  async createFromYamlText(text: string): Promise<CreatedFunction> {
+    let yaml: { load: (s: string) => unknown };
+    try {
+      // @ts-ignore — optional dependency, not in this package's own deps
+      yaml = await import("js-yaml");
+    } catch {
+      throw new PromptFileError(
+        "parsing a .yaml file needs js-yaml (`npm install js-yaml`) — " +
+        "or call createFromYamlText with pre-parsed JSON text instead");
+    }
+    let doc: unknown;
+    try {
+      doc = yaml.load(text);
+    } catch (e) {
+      throw new PromptFileError(`not valid YAML — ${(e as Error).message}`);
+    }
+    if (!isPlainObject(doc) || typeof doc.name !== "string" || !doc.name.trim()) {
+      throw new PromptFileError("the file must be a YAML mapping with at least a `name` field.");
+    }
+    const slug = slugify(doc.name);
+    // no lookup-by-slug endpoint exists — resolve against the (small,
+    // per-space) function list rather than adding a new backend route for
+    // this SDK convenience alone.
+    const existing = (await this.list()).find((f) => f.slug === slug);
+    const fn = existing ?? await this.create(
+      { slug, name: doc.name } as unknown as S["FunctionCreate"]);
+    const raw = await this.h.requestText(
+      "POST", `/api/functions/${fn.id}/versions/yaml`, text, "text/yaml");
+    return { fn, version: JSON.parse(raw) as S["VersionOut"] };
+  }
+
+  /** Pull a function down as YAML — its latest version, regenerated fresh
+   *  from what the platform holds (REQ-264: regenerate, not preserve-
+   *  verbatim). `meta.version` is stamped on the way out, so pushing it back
+   *  unmodified round-trips cleanly (REQ-268). */
+  async getYaml(fnId: number): Promise<string> {
+    const versions = await this.versions(fnId);
+    if (!versions.length) throw new FnaiError(404, `function ${fnId} has no versions yet`);
+    const latest = versions.reduce((a, b) => (b.number > a.number ? b : a));
+    return this.h.requestText("GET", `/api/versions/${latest.id}/yaml`);
+  }
+}
+
+function slugify(name: string): string {
+  const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+  return slug || "function";
 }
 
 class Versions {
@@ -209,18 +306,6 @@ class Versions {
     const body: Json = { input: opts.input, model: opts.model ?? "mock-small" };
     if (opts.temperature !== undefined) body.temperature = opts.temperature;
     return this.h.request("POST", `/api/versions/${vId}/playground/run`, body);
-  }
-
-  submit(vId: number): Promise<S["VersionOut"]> {
-    return this.h.request("POST", `/api/versions/${vId}/submit`, {});
-  }
-
-  approve(vId: number, comment = ""): Promise<S["VersionOut"]> {
-    return this.h.request("POST", `/api/versions/${vId}/approve`, { comment });
-  }
-
-  reject(vId: number, comment = ""): Promise<S["VersionOut"]> {
-    return this.h.request("POST", `/api/versions/${vId}/reject`, { comment });
   }
 
   gate(vId: number): Promise<S["PlanOut"]> {
@@ -551,4 +636,273 @@ export class Client {
     return new FnaiFunction(slug, { apiKey, baseUrl: this.baseUrl,
                                     timeoutMs: this.timeoutMs });
   }
+}
+
+// ── the v2 DSL starter file (REQ-276) — a ready-made, valid example, so the
+// first thing a new user edits is a real function, not a blank page. ──────
+
+export const STARTER_YAML = `name: Summarize Support Ticket
+description: Produces a one-paragraph summary and urgency score for a support ticket.
+
+input:
+  ticket_text: { type: string, required: true }
+
+output:
+  summary: { type: string, required: true }
+  urgency: { type: integer, required: true, minimum: 1, maximum: 5 }
+
+implementation:
+  execution:
+    mode: single_shot
+  flow:
+    - "Summarize the ticket in one paragraph, plain language."
+    - "Score urgency from the ticket's severity."
+  sections:
+    role: You are a support-ticket triage assistant.
+`;
+
+/**
+ * A ready-made, structurally valid starting example (REQ-276) — zero setup,
+ * nothing to look up first. Writes it to `path` (default function.yaml in
+ * the current directory, never overwriting an existing file by accident) and
+ * returns the path actually written.
+ *
+ *     const path = await writeStarterYaml();
+ *     const { fn, version } = await client.functions.createFromYaml(path);   // works as-is
+ */
+export async function writeStarterYaml(path = "function.yaml"): Promise<string> {
+  const fs = await import("node:fs/promises");
+  let exists = true;
+  try {
+    await fs.access(path);
+  } catch {
+    exists = false;   // fs.access rejects exactly when the file is absent
+  }
+  if (exists) {
+    throw new Error(`${path} already exists — pick a different path, or edit it directly`);
+  }
+  await fs.writeFile(path, STARTER_YAML, "utf8");
+  return path;
+}
+
+// ── legacy prompt-file import (pre-v2) — same .yaml/.yml/.json shape the
+// canvas UI's Import button ALSO still reads for a legacy (non-v2) draft
+// (frontend/src/pages/canvas/yamlImport.ts). Superseded by createFromYaml()
+// above for anything new — kept working, unchanged, for existing callers,
+// the same "leave the legacy path alone" choice the backend and canvas both
+// made (see REQ-351's note). Deliberately two separate steps:
+// parsePromptFile() only reads a file and validates it — no network call,
+// nothing created — createFunctionFromDoc() is the one that actually talks
+// to the API. ────────────────────────────────────────────────────────────
+
+export class PromptFileError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PromptFileError";
+  }
+}
+
+const ITEM_KEYS = ["definitions", "instructions", "examples",
+                   "negative_examples", "edge_cases", "non_goals"] as const;
+const LABEL: Record<string, string> = {
+  definitions: "Definitions", instructions: "Instructions", examples: "Examples",
+  negative_examples: "Negative examples", edge_cases: "Edge cases", non_goals: "Non-goals",
+};
+const KNOWN_KEYS = new Set<string>(["role", "freeform", "inputs", "outputs", ...ITEM_KEYS]);
+const FIELD_TYPES = new Set(["string", "number", "integer", "boolean", "array", "object"]);
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+function parseFieldMap(raw: unknown, label: string): Json {
+  if (!isPlainObject(raw)) throw new PromptFileError(`${label} must be a mapping of field name to type.`);
+  const properties: Json = {};
+  const required: string[] = [];
+  for (const [name, spec] of Object.entries(raw)) {
+    let type: unknown, description: unknown, isRequired = true;
+    if (typeof spec === "string") {
+      type = spec;
+    } else if (isPlainObject(spec)) {
+      type = spec.type;
+      description = spec.description;
+      if (spec.required !== undefined) isRequired = !!spec.required;
+    } else {
+      throw new PromptFileError(`${label}.${name} must be a type name or {type, description, required}.`);
+    }
+    if (typeof type !== "string" || !FIELD_TYPES.has(type)) {
+      throw new PromptFileError(`${label}.${name}: type must be one of ${[...FIELD_TYPES].join(", ")}.`);
+    }
+    if (description !== undefined && typeof description !== "string") {
+      throw new PromptFileError(`${label}.${name}.description must be text.`);
+    }
+    properties[name] = description ? { type, description } : { type };
+    if (isRequired) required.push(name);
+  }
+  return { type: "object", required, properties };
+}
+
+export interface PromptDoc {
+  sections: Json[];
+  input_schema?: Json;
+  output_schema?: Json;
+}
+
+/**
+ * Parse a canvas-format prompt file into `{sections, input_schema?, output_schema?}`.
+ *
+ * Read-and-validate only — makes no network calls and creates nothing.
+ * Throws PromptFileError naming exactly what's missing/wrong if the file
+ * doesn't satisfy the format (role is required; inputs:/outputs:, if
+ * present, must be a field-name -> type mapping; unknown top-level keys are
+ * rejected rather than silently dropped).
+ *
+ * .json parses with no extra package. .yaml/.yml needs `js-yaml` installed
+ * separately — this SDK has zero required runtime dependencies, so that's an
+ * opt-in you add yourself (`npm install js-yaml`) only if you use YAML files.
+ */
+export async function parsePromptFile(path: string): Promise<PromptDoc> {
+  const fs = await import("node:fs/promises");
+  let text: string;
+  try {
+    text = await fs.readFile(path, "utf8");
+  } catch {
+    throw new PromptFileError(`file not found: ${path}`);
+  }
+
+  let doc: unknown;
+  if (path.toLowerCase().endsWith(".json")) {
+    try {
+      doc = JSON.parse(text);
+    } catch (e) {
+      throw new PromptFileError(`not valid JSON — ${(e as Error).message}`);
+    }
+  } else {
+    let yaml: { load: (s: string) => unknown };
+    try {
+      // @ts-ignore — optional dependency, not in this package's own deps
+      yaml = await import("js-yaml");
+    } catch {
+      throw new PromptFileError(
+        "parsing a .yaml file needs js-yaml (`npm install js-yaml`) — " +
+        "or save the file as .json instead, which needs no extra package");
+    }
+    try {
+      doc = yaml.load(text);
+    } catch (e) {
+      throw new PromptFileError(`not valid YAML — ${(e as Error).message}`);
+    }
+  }
+
+  if (!isPlainObject(doc)) {
+    throw new PromptFileError("the file must be an object/mapping (key: value pairs) " +
+      "at the top level, not a list or plain text.");
+  }
+
+  const unknown = Object.keys(doc).filter((k) => !KNOWN_KEYS.has(k));
+  if (unknown.length) {
+    throw new PromptFileError(`unknown section${unknown.length > 1 ? "s" : ""}: ${unknown.join(", ")}. ` +
+      `expected: role, ${ITEM_KEYS.join(", ")}, freeform, inputs, outputs.`);
+  }
+
+  const role = doc.role;
+  if (typeof role !== "string" || !role.trim()) {
+    throw new PromptFileError("role is required and must be non-empty text.");
+  }
+
+  const sections: Json[] = [{ type: "role", content: role }];
+
+  for (const key of ITEM_KEYS) {
+    const raw = doc[key];
+    if (raw === undefined) continue;
+    if (!Array.isArray(raw) || raw.some((it) => typeof it !== "string" || !it.trim())) {
+      throw new PromptFileError(`${key} must be a list of non-empty text lines.`);
+    }
+    if (raw.length) sections.push({ type: key, title: LABEL[key], items: raw });
+  }
+
+  const rawFree = doc.freeform;
+  if (rawFree !== undefined) {
+    if (!Array.isArray(rawFree)) {
+      throw new PromptFileError("freeform must be a list of {title, content} blocks.");
+    }
+    for (const block of rawFree) {
+      if (!isPlainObject(block) || typeof block.content !== "string" || !block.content.trim()) {
+        throw new PromptFileError("each freeform block needs a non-empty content field (title is optional).");
+      }
+      const title = block.title;
+      sections.push({
+        type: "freeform",
+        title: typeof title === "string" && title.trim() ? title : "Freeform",
+        content: block.content,
+      });
+    }
+  }
+
+  const result: PromptDoc = { sections };
+  if (doc.inputs !== undefined) result.input_schema = parseFieldMap(doc.inputs, "inputs");
+  if (doc.outputs !== undefined) result.output_schema = parseFieldMap(doc.outputs, "outputs");
+  return result;
+}
+
+export interface CreatedFunction {
+  fn: S["FunctionOut"];
+  version: S["VersionOut"];
+}
+
+async function createFunctionAndVersion(client: Client, opts: {
+  slug: string; name: string; sections: Json[];
+  inputSchema?: Json; outputSchema?: Json;
+  model?: string; temperature?: number; extra?: Json;
+}): Promise<CreatedFunction> {
+  const fn = await client.functions.create({
+    slug: opts.slug, name: opts.name,
+    input_schema: opts.inputSchema ?? { type: "object", properties: {} },
+    output_schema: opts.outputSchema ?? { type: "object", properties: {} },
+    ...(opts.extra ?? {}),
+  } as unknown as S["FunctionCreate"]);
+  const version = await client.functions.createVersion(fn.id, {
+    snapshot: {
+      impl: "prompt", tools: [], sections: opts.sections,
+      model_binding: { model: opts.model ?? "mock-small", temperature: opts.temperature ?? 0.2 },
+    },
+  } as unknown as S["VersionCreate"]);
+  return { fn, version };
+}
+
+/**
+ * Create a function + its first version from data already parsed by
+ * parsePromptFile(). This is the step that makes network calls — it never
+ * reads a file itself, so callers can inspect or edit `doc` in between the
+ * two. `doc` supplies the prompt's sections and, if the file declared
+ * inputs:/outputs:, their schemas (an empty object schema is used for
+ * whichever one the file omitted). `slug`/`name` are yours to choose, not
+ * derived from the file.
+ *
+ * For creating a function from sections/schemas you already have in code —
+ * not loaded from a file — use createFunction() instead.
+ */
+export function createFunctionFromDoc(client: Client, opts: {
+  slug: string; name: string; doc: PromptDoc;
+  model?: string; temperature?: number; extra?: Json;
+}): Promise<CreatedFunction> {
+  return createFunctionAndVersion(client, {
+    slug: opts.slug, name: opts.name, sections: opts.doc.sections,
+    inputSchema: opts.doc.input_schema, outputSchema: opts.doc.output_schema,
+    model: opts.model, temperature: opts.temperature, extra: opts.extra,
+  });
+}
+
+/**
+ * Create a function + its first version from sections/schemas you supply
+ * directly — the manual counterpart to createFunctionFromDoc(), for when you
+ * aren't loading a prompt from a file. inputSchema/outputSchema each default
+ * to an empty object schema if omitted.
+ */
+export function createFunction(client: Client, opts: {
+  slug: string; name: string; sections: Json[];
+  inputSchema?: Json; outputSchema?: Json;
+  model?: string; temperature?: number; extra?: Json;
+}): Promise<CreatedFunction> {
+  return createFunctionAndVersion(client, opts);
 }

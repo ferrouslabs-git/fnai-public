@@ -25,6 +25,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -181,10 +183,11 @@ type FunctionOut struct {
 }
 
 type VersionOut struct {
-	ID      int    `json:"id"`
-	Number  int    `json:"number"`
-	Status  string `json:"status"`
-	Message string `json:"message"`
+	ID       int            `json:"id"`
+	Number   int            `json:"number"`
+	Status   string         `json:"status"`
+	Message  string         `json:"message"`
+	Snapshot map[string]any `json:"snapshot"`
 }
 
 type DeploymentOut struct {
@@ -277,7 +280,6 @@ type ScoreOut struct {
 	ID   int    `json:"id"`
 	Name string `json:"name"`
 	Tier string `json:"tier"`
-	Gate bool   `json:"gate"`
 }
 
 type DatasetOut struct {
@@ -606,8 +608,298 @@ func (c *Client) Me() (map[string]any, error) {
 	return out, c.h.do("GET", "/api/me", nil, nil, &out)
 }
 
+// Raw calls any management-API path directly, decoding the JSON response
+// into out (a pointer, or nil to discard the body). For endpoints this
+// hand-maintained golden-path surface doesn't (yet) have a typed method
+// for — same authenticated transport, same error semantics as every typed
+// call above. Prefer a typed method when one exists; this is the escape
+// hatch, not the front door.
+func (c *Client) Raw(method, path string, body any, out any) error {
+	return c.h.do(method, path, body, nil, out)
+}
+
 // Function crosses to the runtime surface on this client's base URL.
 func (c *Client) Function(slug, apiKey string) *Function {
 	return &Function{Slug: slug,
 		h: &httpClient{base: c.h.base, token: apiKey, hc: c.h.hc}}
+}
+
+// ── prompt file import — same .yaml/.yml/.json format the canvas UI's Import
+// button reads (frontend/src/pages/canvas/yamlImport.ts is the source of
+// truth for this format; keep them in sync). Deliberately two separate
+// steps: ParsePromptFile/ParsePromptDoc only read and validate — no network
+// call, nothing created; CreateFunctionFromDoc is the one that talks to the
+// API. ────────────────────────────────────────────────────────────────────
+
+// PromptFileError is returned by ParsePromptFile/ParsePromptDoc when a
+// prompt document is missing something required or malformed. It never
+// wraps a network error — those come back as *Error instead.
+type PromptFileError struct{ msg string }
+
+func (e *PromptFileError) Error() string { return e.msg }
+
+func promptFileErrorf(format string, a ...any) error {
+	return &PromptFileError{msg: fmt.Sprintf(format, a...)}
+}
+
+var itemKeys = []string{"definitions", "instructions", "examples",
+	"negative_examples", "edge_cases", "non_goals"}
+
+var itemLabel = map[string]string{
+	"definitions": "Definitions", "instructions": "Instructions", "examples": "Examples",
+	"negative_examples": "Negative examples", "edge_cases": "Edge cases", "non_goals": "Non-goals",
+}
+
+var knownKeys = func() map[string]bool {
+	m := map[string]bool{"role": true, "freeform": true, "inputs": true, "outputs": true}
+	for _, k := range itemKeys {
+		m[k] = true
+	}
+	return m
+}()
+
+var fieldTypes = map[string]bool{
+	"string": true, "number": true, "integer": true, "boolean": true, "array": true, "object": true,
+}
+
+func parseFieldMap(raw any, label string) (map[string]any, error) {
+	m, ok := raw.(map[string]any)
+	if !ok {
+		return nil, promptFileErrorf("%s must be a mapping of field name to type.", label)
+	}
+	properties := map[string]any{}
+	var required []string
+	for name, spec := range m {
+		var typ, description any
+		isRequired := true
+		switch v := spec.(type) {
+		case string:
+			typ = v
+		case map[string]any:
+			typ = v["type"]
+			description = v["description"]
+			if req, present := v["required"]; present {
+				b, _ := req.(bool)
+				isRequired = b
+			}
+		default:
+			return nil, promptFileErrorf("%s.%s must be a type name or {type, description, required}.", label, name)
+		}
+		typStr, ok := typ.(string)
+		if !ok || !fieldTypes[typStr] {
+			return nil, promptFileErrorf(
+				"%s.%s: type must be one of string, number, integer, boolean, array, object.", label, name)
+		}
+		if description != nil {
+			if _, ok := description.(string); !ok {
+				return nil, promptFileErrorf("%s.%s.description must be text.", label, name)
+			}
+		}
+		prop := map[string]any{"type": typStr}
+		if description != nil {
+			prop["description"] = description
+		}
+		properties[name] = prop
+		if isRequired {
+			required = append(required, name)
+		}
+	}
+	// Go map iteration order is randomized — sort for a deterministic result
+	// (Python/TS preserve the file's declaration order instead; the SET of
+	// required fields is what matters for validation, not its order).
+	sort.Strings(required)
+	if required == nil {
+		required = []string{}
+	}
+	return map[string]any{"type": "object", "required": required, "properties": properties}, nil
+}
+
+// PromptDoc is the parsed shape CreateFunctionFromDoc consumes.
+type PromptDoc struct {
+	Sections     []map[string]any
+	InputSchema  map[string]any // nil if the document had no inputs: block
+	OutputSchema map[string]any // nil if the document had no outputs: block
+}
+
+// ParsePromptFile reads and validates a canvas-format prompt file into a
+// PromptDoc. Read-and-validate only — makes no network call and creates
+// nothing.
+//
+// Only .json is supported directly: this package stays dependency-free, and
+// Go has no standard-library YAML support. For a .yaml/.yml file, decode it
+// yourself with a YAML library of your choice (e.g. gopkg.in/yaml.v3) into a
+// map[string]interface{} and pass that to ParsePromptDoc instead — the
+// validation rules are identical either way.
+func ParsePromptFile(path string) (*PromptDoc, error) {
+	if !strings.HasSuffix(strings.ToLower(path), ".json") {
+		return nil, promptFileErrorf(
+			"ParsePromptFile only reads .json directly (this package has zero " +
+				"dependencies) — for YAML, decode the file yourself with a YAML " +
+				"library into map[string]interface{} and call ParsePromptDoc")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, promptFileErrorf("file not found: %s", path)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, promptFileErrorf("not valid JSON — %s", err.Error())
+	}
+	return ParsePromptDoc(raw)
+}
+
+// ParsePromptDoc validates an already-decoded document — from
+// json.Unmarshal, your own YAML decoder, or built by hand — into the same
+// shape ParsePromptFile produces. Raises PromptFileError naming exactly
+// what's missing/wrong (role is required; inputs:/outputs:, if present, must
+// be a field-name -> type mapping; unknown top-level keys are rejected
+// rather than silently dropped).
+func ParsePromptDoc(doc map[string]any) (*PromptDoc, error) {
+	var unknown []string
+	for k := range doc {
+		if !knownKeys[k] {
+			unknown = append(unknown, k)
+		}
+	}
+	if len(unknown) > 0 {
+		sort.Strings(unknown)
+		plural := ""
+		if len(unknown) > 1 {
+			plural = "s"
+		}
+		return nil, promptFileErrorf(
+			"unknown section%s: %s. expected: role, %s, freeform, inputs, outputs.",
+			plural, strings.Join(unknown, ", "), strings.Join(itemKeys, ", "))
+	}
+
+	role, _ := doc["role"].(string)
+	if strings.TrimSpace(role) == "" {
+		return nil, promptFileErrorf("role is required and must be non-empty text.")
+	}
+
+	sections := []map[string]any{{"type": "role", "content": role}}
+
+	for _, key := range itemKeys {
+		raw, present := doc[key]
+		if !present {
+			continue
+		}
+		items, ok := raw.([]any)
+		if !ok {
+			return nil, promptFileErrorf("%s must be a list of non-empty text lines.", key)
+		}
+		strs := make([]string, 0, len(items))
+		for _, it := range items {
+			s, ok := it.(string)
+			if !ok || strings.TrimSpace(s) == "" {
+				return nil, promptFileErrorf("%s must be a list of non-empty text lines.", key)
+			}
+			strs = append(strs, s)
+		}
+		if len(strs) > 0 {
+			sections = append(sections, map[string]any{"type": key, "title": itemLabel[key], "items": strs})
+		}
+	}
+
+	if rawFree, present := doc["freeform"]; present {
+		blocks, ok := rawFree.([]any)
+		if !ok {
+			return nil, promptFileErrorf("freeform must be a list of {title, content} blocks.")
+		}
+		for _, b := range blocks {
+			block, ok := b.(map[string]any)
+			content, cok := block["content"].(string)
+			if !ok || !cok || strings.TrimSpace(content) == "" {
+				return nil, promptFileErrorf("each freeform block needs a non-empty content field (title is optional).")
+			}
+			title, _ := block["title"].(string)
+			if strings.TrimSpace(title) == "" {
+				title = "Freeform"
+			}
+			sections = append(sections, map[string]any{"type": "freeform", "title": title, "content": content})
+		}
+	}
+
+	out := &PromptDoc{Sections: sections}
+	if rawIn, present := doc["inputs"]; present {
+		schema, err := parseFieldMap(rawIn, "inputs")
+		if err != nil {
+			return nil, err
+		}
+		out.InputSchema = schema
+	}
+	if rawOut, present := doc["outputs"]; present {
+		schema, err := parseFieldMap(rawOut, "outputs")
+		if err != nil {
+			return nil, err
+		}
+		out.OutputSchema = schema
+	}
+	return out, nil
+}
+
+// CreateOpts configures CreateFunctionFromDoc / CreateFunction. Temperature
+// is a pointer so an unset value (nil) can default to 0.2 without colliding
+// with an intentional temperature of 0.
+type CreateOpts struct {
+	Slug, Name  string
+	Model       string // default "mock-small"
+	Temperature *float64
+}
+
+func createFunctionAndVersion(client *Client, o CreateOpts,
+	sections []map[string]any, inputSchema, outputSchema map[string]any) (*FunctionOut, *VersionOut, error) {
+	if inputSchema == nil {
+		inputSchema = map[string]any{"type": "object", "properties": map[string]any{}}
+	}
+	if outputSchema == nil {
+		outputSchema = map[string]any{"type": "object", "properties": map[string]any{}}
+	}
+	model := o.Model
+	if model == "" {
+		model = "mock-small"
+	}
+	temperature := 0.2
+	if o.Temperature != nil {
+		temperature = *o.Temperature
+	}
+	fn, err := client.Functions.Create(FunctionCreate{
+		Slug: o.Slug, Name: o.Name, InputSchema: inputSchema, OutputSchema: outputSchema,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	snapshot := map[string]any{
+		"impl": "prompt", "tools": []any{}, "sections": sections,
+		"model_binding": map[string]any{"model": model, "temperature": temperature},
+	}
+	v, err := client.Functions.CreateVersion(fn.ID, snapshot, "")
+	if err != nil {
+		return nil, nil, err
+	}
+	return fn, v, nil
+}
+
+// CreateFunctionFromDoc creates a function + its first version from data
+// already parsed by ParsePromptFile/ParsePromptDoc. This is the step that
+// makes network calls — it never reads a file itself, so callers can
+// inspect or edit doc in between the two. doc supplies the prompt's
+// sections and, if the document declared inputs:/outputs:, their schemas
+// (an empty object schema is used for whichever one was omitted). Slug/Name
+// are yours to choose via opts, not derived from the file.
+//
+// For creating a function from sections/schemas you already have in code —
+// not parsed from a document — use CreateFunction instead.
+func CreateFunctionFromDoc(client *Client, opts CreateOpts, doc *PromptDoc) (*FunctionOut, *VersionOut, error) {
+	return createFunctionAndVersion(client, opts, doc.Sections, doc.InputSchema, doc.OutputSchema)
+}
+
+// CreateFunction creates a function + its first version from sections/
+// schemas you supply directly — the manual counterpart to
+// CreateFunctionFromDoc, for when you aren't parsing a prompt document at
+// all. inputSchema/outputSchema may each be nil, defaulting to an empty
+// object schema.
+func CreateFunction(client *Client, opts CreateOpts, sections []map[string]any,
+	inputSchema, outputSchema map[string]any) (*FunctionOut, *VersionOut, error) {
+	return createFunctionAndVersion(client, opts, sections, inputSchema, outputSchema)
 }

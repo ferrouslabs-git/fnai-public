@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fnai"
-version = "0.2.0"
+version = "0.4.0"
 description = "Python client for functionalAI — invoke deployed functions and drive the management API"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -19,8 +19,18 @@ classifiers = [
   "Programming Language :: Python :: 3 :: Only",
   "Topic :: Software Development :: Libraries",
 ]
-# Zero runtime dependencies (stdlib only).
+# Zero runtime dependencies (stdlib only) for the core `fnai` module.
 dependencies = []
+
+# Opt-in only: pip install "fnai[mcp] @ git+https://github.com/ferrouslabs-git/fnai-public.git#subdirectory=python"
+# for the local MCP stdio server (fnai_mcp.py). Keeps the core client
+# dependency-free for everyone else.
+[project.optional-dependencies]
+mcp = ["mcp>=2.0"]
+
+[project.scripts]
+fnai-mcp = "fnai_mcp:main"
+fn = "fn_cli:main"
 
 [project.urls]
 Homepage = "https://github.com/ferrouslabs-git/fnai-public"
@@ -28,4 +38,4 @@ Repository = "https://github.com/ferrouslabs-git/fnai-public"
 Issues = "https://github.com/ferrouslabs-git/fnai-public/issues"
 
 [tool.setuptools]
-py-modules = ["fnai"]
+py-modules = ["fnai", "fnai_mcp", "fn_cli"]

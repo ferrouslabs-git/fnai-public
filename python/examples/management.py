@@ -27,9 +27,7 @@ try:
     out = c.versions.playground(v["id"], input={"document": "…long text…"})
     print("playground:", out.get("output"))
 
-    # lifecycle → live
-    c.versions.submit(v["id"])
-    c.versions.approve(v["id"], comment="looks good")
+    # go live — deploy runs the gate (compile, readiness, gated evals) and freezes the draft
     c.deployments.deploy(fn["id"], v["id"])
 
     # hand the runtime surface to callers

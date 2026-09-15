@@ -55,9 +55,7 @@ console.log("functions.createVersion →", v.id);
 const play = await c.versions.playground(v.id, { input: { document: "Invoice, total 12.30" } });
 console.log("versions.playground →", JSON.stringify(play.output).slice(0, 60));
 
-await c.versions.submit(v.id);
-await c.versions.approve(v.id, "ts golden path");
-await c.deployments.deploy(fn.id, v.id);
+await c.deployments.deploy(fn.id, v.id);   // deploy IS the gate — freezes the draft
 console.log("deployments.deploy →", (await c.deployments.current(fn.id)).version_id);
 
 const key = await c.keys.invoke.mint(fn.id, "ts-demo");

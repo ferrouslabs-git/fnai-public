@@ -60,8 +60,7 @@ fn = c.functions.create(slug="summarizer", name="Summarizer",
                         input_schema=IN, output_schema=OUT)
 v = c.functions.create_version(fn["id"], snapshot=SNAPSHOT, message="v1")
 c.versions.playground(v["id"], input={"document": "…"})     # try before shipping
-c.versions.submit(v["id"]); c.versions.approve(v["id"])
-c.deployments.deploy(fn["id"], v["id"])
+c.deployments.deploy(fn["id"], v["id"])                      # deploy IS the gate — freezes the draft
 
 key = c.keys.invoke.mint(fn["id"], name="prod")              # fnk_… shown once
 result = c.function(fn["slug"], api_key=key["key"]).run(document="…")
@@ -90,6 +89,38 @@ Semantics:
 - API-level problems raise `FnaiError` (`.status`, `.detail`): 401 bad key, 404 unknown/undeployed function, 422 input doesn't match the contract, 504 execution timeout.
 - An **execution** failure is not an exception — check `result.ok` / `result.status`.
 - Deploys and rollbacks take effect behind the same call — your code never changes when a new version goes live.
+
+## Command line (`fn`)
+
+`fn_cli.py` is the verified implementation of REQ-55's `fn` command-line
+tool: `login`, `init`, `new`, `ls`, `run`, `eval`, `deploy`, `rollback`,
+`pin`, `diff`, `logs`. (There's also a hand-written Go version at
+`sdk/go/cmd/fn` — same design, but built without a Go toolchain available
+to compile it. This Python one has actually been run, end-to-end, against
+a live server.)
+
+```bash
+python3 fn_cli.py init myfunction.yaml     # no login needed
+python3 fn_cli.py login                    # paste an fnp_… token
+python3 fn_cli.py new myfunction.yaml
+python3 fn_cli.py eval <function-id>       # exits nonzero on failure — use in CI
+```
+
+### Packaging as a single binary
+
+The ticket asks for a self-contained binary, not a script that needs a
+Python interpreter on PATH. [PyInstaller](https://pyinstaller.org) does
+that:
+
+```bash
+pip install pyinstaller
+pyinstaller --onefile --name fn fn_cli.py
+./dist/fn help
+```
+
+Verified: the resulting `dist/fn` runs standalone commands (`help`,
+`init`) and live API calls (`ls` against a real server) with `PATH`
+stripped down to just `/usr/bin:/bin` — no `python3` reachable at all.
 
 ## License
 

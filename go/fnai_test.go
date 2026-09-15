@@ -28,6 +28,9 @@ func stub(t *testing.T) (*httptest.Server, *Client) {
 	mux.HandleFunc("DELETE /api/auth/tokens/tid", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(204)
 	})
+	mux.HandleFunc("GET /api/experiments/99", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{"id": 99, "status": "completed"})
+	})
 	mux.HandleFunc("POST /v1/run/demo", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Input map[string]any `json:"input"`
@@ -57,6 +60,20 @@ func TestTypedDeploymentRoundTrip(t *testing.T) {
 	}
 	if dep.VersionID != 9 || *dep.VersionNumber != 3 || dep.Status != "active" {
 		t.Fatalf("bad deployment decode: %+v", dep)
+	}
+}
+
+func TestRawReachesAnUntypedEndpoint(t *testing.T) {
+	_, c := stub(t)
+	var out struct {
+		ID     int    `json:"id"`
+		Status string `json:"status"`
+	}
+	if err := c.Raw("GET", "/api/experiments/99", nil, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.ID != 99 || out.Status != "completed" {
+		t.Fatalf("bad Raw decode: %+v", out)
 	}
 }
 

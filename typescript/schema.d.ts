@@ -65,6 +65,36 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/auth/session": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Session
+         * @description Where may this person go? Resolved from identity alone, before any tenant
+         *     is bound — this is what the SPA calls to decide its landing page.
+         *
+         *     Deliberately NOT /api/me: that one describes the caller *inside* one already
+         *     chosen account/space and 403s when the choice is wrong. This one has no
+         *     choice to be wrong about.
+         *
+         *     Owners (platform_admin) get every organization; everyone else gets only the
+         *     ones they hold a membership in. The auth tables carry no RLS policies, so
+         *     that filter is the isolation boundary, not a convenience — widen it and
+         *     every tenant name on the platform leaks to any authenticated caller.
+         */
+        get: operations["session"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/me": {
         parameters: {
             query?: never;
@@ -75,6 +105,27 @@ export interface paths {
         /** Me */
         get: operations["me"];
         put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/me/default-space": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set Default Space
+         * @description Personal preference — where this user lands on sign-in. Any member may
+         *     set their own; the space must belong to the current account.
+         */
+        put: operations["set_default_space"];
         post?: never;
         delete?: never;
         options?: never;
@@ -104,6 +155,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/spaces/{space_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Archive Space
+         * @description Archive, not hard delete — same shape as functions/datasets. Running
+         *     deployments and traffic are untouched; the space just leaves the default
+         *     list (SMA-192 v1 does not add a liveness check before allowing this).
+         */
+        delete: operations["archive_space"];
+        options?: never;
+        head?: never;
+        /** Update Space */
+        patch: operations["update_space"];
+        trace?: never;
+    };
+    "/api/spaces/{space_id}/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Restore Space */
+        post: operations["restore_space"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/overview": {
         parameters: {
             query?: never;
@@ -117,6 +208,9 @@ export interface paths {
          *     per-space aggregates; space-level users get their space's stats only.
          *     Aggregation temporarily re-points the RLS space GUC per space — legitimate,
          *     because the space list itself is derived from the user's account rights.
+         *
+         *     Archived spaces are excluded by default (SMA-192) — include_archived=true
+         *     is how the Spaces pane's "Archived" section and Restore action see them.
          */
         get: operations["overview"];
         put?: never;
@@ -188,6 +282,115 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/platform/accounts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create Account
+         * @description Register a customer organization: the tenant, its first space, and an
+         *     account_admin invitation for the owner. This replaces creating orgs by
+         *     running scripts/seed_*.py. Platform staff only.
+         *
+         *     Nothing is emailed — the raw invite token comes back in this response for
+         *     the operator to pass on (see members/invites.py).
+         */
+        post: operations["create_account"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/platform/accounts/{account_id}/subscription": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Update Subscription
+         * @description SMA-282. Platform staff only, V1 — no self-serve. An org's plan,
+         *     status, and credit allowance/billing-period-start (both null until set
+         *     here) live directly on Tenant; billing (this epic) is now their writer,
+         *     per PERMISSIONS-ARCHITECTURE.md §3's plan for how RBAC will read `plan`.
+         *
+         *     Plan Menu integration (client request, 2026-09-02, locked down 2026-09-03):
+         *     credit_allowance is never taken from the caller — setting `plan` always
+         *     auto-fills the allowance from that plan's current PlanRate (POST
+         *     /platform/plan-rates). There is deliberately no override: the Plan Menu
+         *     is the only source of truth for what a plan is worth, so a special-case
+         *     deal is a new dated PlanRate row (which only ever affects orgs assigned
+         *     from that date on), never a one-off number typed for a single org. A
+         *     plan with no PlanRate defined yet just leaves credit_allowance untouched
+         *     rather than blocking the call.
+         */
+        patch: operations["update_subscription"];
+        trace?: never;
+    };
+    "/api/platform/accounts/{account_id}/downgrade-sweep": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Downgrade Sweep
+         * @description SMA-259/260: staff-triggered for now (a plan change via
+         *     update_subscription above does NOT run this automatically — a
+         *     membership-rewriting sweep is deliberately a separate, explicit action
+         *     from changing a plan string, not a side effect of it) — automated once
+         *     plan changes become self-serve billing under E12 v2, per the ticket's
+         *     own rollout note. Idempotent: safe to call again on an org that was
+         *     already swept, or one that was never on enterprise (a no-op either way,
+         *     since it only ever touches active custom-role rows).
+         */
+        post: operations["downgrade_sweep"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/platform/accounts/{account_id}/upgrade-restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Upgrade Restore
+         * @description The other half of downgrade_sweep, same footing: staff-triggered, not
+         *     a side effect of the plan PATCH. Brings back whichever of this account's
+         *     custom roles a PREVIOUS downgrade archived — never one the org deleted
+         *     themselves. Idempotent: a role already restored, or one that was never
+         *     downgrade-archived, is simply not touched again.
+         */
+        post: operations["upgrade_restore"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/functions": {
         parameters: {
             query?: never;
@@ -228,6 +431,45 @@ export interface paths {
         patch: operations["patch_function"];
         trace?: never;
     };
+    "/api/functions/{fn_id}/editors": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Function Editors */
+        get: operations["list_function_editors"];
+        put?: never;
+        /**
+         * Grant Function Editor
+         * @description Only someone who already holds blanket functions.write may delegate a
+         *     narrower slice of it to someone else.
+         */
+        post: operations["grant_function_editor"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/functions/{fn_id}/editors/{user_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Revoke Function Editor */
+        delete: operations["revoke_function_editor"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/functions/{fn_id}/versions": {
         parameters: {
             query?: never;
@@ -246,6 +488,53 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/versions/{v_id}/yaml": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Version Yaml
+         * @description Pull a function down as a text file (REQ-44). `meta.version` is stamped
+         *     fresh on the way out — REQ-264's decision (regenerate, not preserve
+         *     verbatim): the platform's export is a view of what it holds, not a second
+         *     stored copy that could drift from it the moment anyone edits in the canvas.
+         */
+        get: operations["get_version_yaml"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/functions/{fn_id}/versions/yaml": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create Version From Yaml
+         * @description Push a function up from a text file (REQ-44), with stale-overwrite
+         *     protection (REQ-268): `meta.version` is optional on a brand-new function
+         *     (nothing to be stale against) but required once one exists — a push with
+         *     no version against a live function is a blind overwrite, exactly what
+         *     this guards against, so it 409s the same as a genuinely stale one.
+         */
+        post: operations["create_version_from_yaml"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/versions/{v_id}": {
         parameters: {
             query?: never;
@@ -258,23 +547,6 @@ export interface paths {
         /** Update Version */
         put: operations["update_version"];
         post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/versions/{v_id}/submit": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Submit Version */
-        post: operations["submit_version"];
         delete?: never;
         options?: never;
         head?: never;
@@ -318,43 +590,6 @@ export interface paths {
         get: operations["function_types"];
         put?: never;
         post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/versions/{v_id}/reject": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Reject Version
-         * @description Send a submitted version back to draft with a comment — the other half of the gate.
-         */
-        post: operations["reject_version"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/versions/{v_id}/approve": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Approve Version */
-        post: operations["approve_version"];
         delete?: never;
         options?: never;
         head?: never;
@@ -452,6 +687,33 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/datasets/{ds_id}/snapshots/{snap_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Snapshot
+         * @description One version's frozen rows — what the history list leaves out on purpose.
+         */
+        get: operations["get_snapshot"];
+        put?: never;
+        post?: never;
+        /**
+         * Delete Snapshot
+         * @description Drop one frozen version — only while no experiment has used it. An
+         *     experiment that pins a version would otherwise lose the very rows it was
+         *     measured against, so a used version is kept for good: same rule the dataset
+         *     delete enforces, one version at a time.
+         */
+        delete: operations["delete_snapshot"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/datasets/{ds_id}": {
         parameters: {
             query?: never;
@@ -528,23 +790,6 @@ export interface paths {
         options?: never;
         head?: never;
         patch?: never;
-        trace?: never;
-    };
-    "/api/scores/{score_id}/gate": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        /** Toggle Gate */
-        patch: operations["toggle_gate"];
         trace?: never;
     };
     "/api/functions/{fn_id}/experiments": {
@@ -641,6 +886,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/experiments/{exp_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cancel Experiment
+         * @description Stop a running experiment after its current call. The row flips to failed
+         *     (no results); the runner notices between rollouts and aborts. Edit / run
+         *     again afterwards — nothing to clone.
+         */
+        post: operations["cancel_experiment"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/experiments/{exp_id}/run": {
         parameters: {
             query?: never;
@@ -652,7 +919,8 @@ export interface paths {
         put?: never;
         /**
          * Run Saved Experiment
-         * @description Run a draft experiment once. After it finishes, clone to run again.
+         * @description Run a draft experiment — never run, or failed without results (a retry).
+         *     Completed experiments are immutable: clone to run again.
          */
         post: operations["run_saved_experiment"];
         delete?: never;
@@ -783,6 +1051,66 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/costs/platform/usage/rollup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Platform Usage Rollup
+         * @description SMA-240/241. Platform staff only, cross-org — cost_events' RLS policy
+         *     is account_id+space_id scoped, so reading across every org means
+         *     re-pointing both GUCs per (account, space) pair and combining in Python,
+         *     same established pattern as billing/api.py's inspect_ledger()/
+         *     _consumption_across_spaces(). No tenant-scoped variant of this route
+         *     exists anywhere — that IS the tenant-invisibility guarantee (SMA-244
+         *     covers the nav/UI half).
+         */
+        get: operations["platform_usage_rollup"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/costs/usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Org Usage
+         * @description SMA-246/247. The org's own view of what their own keys did — tokens
+         *     only, BYOK-funded only. No permission gate beyond being a real member of
+         *     the org: keys/api.py's own list_keys() is equally open (any role may
+         *     read it), and this is the same "what are our keys doing" question,
+         *     answered instead of guessed. Org-wide, not space-scoped like /summary
+         *     above — loops every space in the account and re-points the RLS space
+         *     GUC per space, same established pattern as billing's
+         *     _consumption_across_spaces() and the platform rollup above.
+         *
+         *     "BYOK-funded only" is enforced two ways at once, deliberately redundant:
+         *     key_id IS NOT NULL (a mock-provider call with no real key leaves it
+         *     NULL) AND source not in PLATFORM_SOURCES (SMA-239's judge/planner/
+         *     scoreset_gen rows carry THIS org's own account_id — they're attributed
+         *     to the org that triggered them — so without this second filter they'd
+         *     leak into what's supposed to be a BYOK-only view).
+         */
+        get: operations["org_usage"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/provider-keys": {
         parameters: {
             query?: never;
@@ -810,34 +1138,12 @@ export interface paths {
         };
         /**
          * Keys Console
-         * @description The org admin's master view: every key in the account — org-wide keys
-         *     plus each space's keys (labeled). Account admins only.
+         * @description The org admin's view: every key on the account, plus the spaces a key
+         *     can be restricted to (a superset of the caller's own spaces). Admins only.
          */
         get: operations["keys_console"];
         put?: never;
         post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/provider-keys/{key_id}/assign": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Assign Key
-         * @description Org-admin control over which space owns a key: move it between spaces,
-         *     promote to org-wide, or demote to one space. RLS makes a space→space move
-         *     a two-step dance (source-space GUC → org-wide, target-space GUC → target).
-         */
-        post: operations["assign_key"];
         delete?: never;
         options?: never;
         head?: never;
@@ -962,8 +1268,11 @@ export interface paths {
         };
         /**
          * List Plans
-         * @description Runnable plans for a function — a plan is a named collection of checks that an
-         *     experiment can pin. Returns accepted plans (those with materialised checks) first.
+         * @description Runnable plans (scorings) for a function — a plan is a named collection of
+         *     checks that an experiment can pin. Only hand-built (`manual`) and accepted rows
+         *     qualify: `gated`/`planned` rows are the readiness pipeline's working records
+         *     for a version, never scorings, so they are excluded rather than shown as empty
+         *     "Plan" entries. Returns plans with materialised checks first.
          */
         get: operations["list_plans"];
         put?: never;
@@ -1307,6 +1616,879 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/members": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Members
+         * @description Everyone with a membership in the caller's organization — account-scoped
+         *     members (every space) and space-scoped members alike.
+         *
+         *     Platform staff hold a `platform`-scoped membership, which matches neither
+         *     branch below, so Ferrous never shows up inside a customer's member list.
+         */
+        get: operations["list_members"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/members/invitations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Invitations
+         * @description Invitations for this organization. Pending only unless include_closed.
+         */
+        get: operations["list_invitations"];
+        put?: never;
+        /**
+         * Invite Member
+         * @description Invite someone into this organization. `space` names a space to scope the
+         *     invitation to; omit it for account-wide access (every space).
+         *
+         *     The raw token is in this response ONLY — deliver it to the invitee. There is
+         *     no mail transport yet.
+         */
+        post: operations["invite_member"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/members/invitations/{invitation_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Revoke Invitation
+         * @description Cancel a pending invitation. The row is kept, so the trail survives.
+         */
+        delete: operations["revoke_invitation"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/invitations/{token}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Preview Invitation
+         * @description What the join page shows before sign-in: which org, which role, who for.
+         *     Unauthenticated by design — holding the token is the proof.
+         */
+        get: operations["preview_invitation"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/invitations/{token}/accept": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Accept Invitation
+         * @description Claim an invitation at first sign-in — this is where a pending membership
+         *     becomes a real one, and where the `users` row is minted if it doesn't exist.
+         *
+         *     Runs outside get_scope on purpose: the claimant may have no `users` row yet,
+         *     which get_scope rejects with a 401 before we could ever create one.
+         */
+        post: operations["accept_invitation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/invitations/claim": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Claim Pending
+         * @description Claim every pending invitation addressed to the signed-in email.
+         *
+         *     Cognito's invitation email carries a temporary password but cannot carry a
+         *     per-invitation link — the template is pool-wide. So an invitee who signs in
+         *     with those credentials would otherwise land on a 403 with no membership.
+         *     Here the verified email IS the proof, which is sound because the pool has
+         *     AllowAdminCreateUserOnly=true: nobody can self-register as someone else, and
+         *     Cognito verified the address before issuing the token.
+         *
+         *     Idempotent and safe to call on every sign-in — normally it claims nothing.
+         */
+        post: operations["claim_pending"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/permissions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Permission Catalogue
+         * @description Everything that can be granted, grouped by domain — what a role editor or
+         *     per-user permission screen renders. Data, not a hard-coded UI list, so a new
+         *     verb appears here the moment it is added to core/permissions.py.
+         */
+        get: operations["permission_catalogue"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/members/{user_id}/permissions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Member Permissions
+         * @description What this person can do here, and where each right comes from — the role
+         *     baseline separately from what was attached to them individually.
+         */
+        get: operations["member_permissions"];
+        put?: never;
+        /**
+         * Grant Permission
+         * @description Attach one permission to this person, on top of their role — or, with
+         *     grant_type="deny", remove one the role would otherwise give them.
+         *
+         *     SMA-258: enterprise-gated (a deny costs nothing to allow universally, but
+         *     is gated identically for one UI, one mental model — "per-user overrides
+         *     are an enterprise feature", full stop, not "adding is enterprise but
+         *     removing isn't"). A grant additionally goes through the SAME
+         *     no-escalation guardrail custom roles use (SMA-255): never beyond the
+         *     granting admin's own effective permissions, never platform-layer,
+         *     regardless of plan. A deny has no escalation risk — it only ever removes
+         *     access — so it skips that check.
+         *
+         *     A grant of a write (or other elevated) permission also implies its
+         *     domain's read, same as roles_service._with_implied_reads for custom
+         *     roles — granting someone functions.write alone would otherwise leave
+         *     them able to edit a function they can't even list. A deny stays
+         *     single-permission: taking away read isn't implied by taking away write.
+         */
+        post: operations["grant_permission"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/members/{user_id}/permissions/{permission}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Revoke Permission
+         * @description Detach an individually granted permission. Role-derived rights are not
+         *     touched here — change the role for those.
+         */
+        delete: operations["revoke_permission"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/members/{user_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Deactivate Member
+         * @description Remove this person's access. Their `users` row and everything they built
+         *     stay — only the memberships are suspended, so the trail survives and the
+         *     access can be restored by re-inviting them.
+         */
+        delete: operations["deactivate_member"];
+        options?: never;
+        head?: never;
+        /**
+         * Update Member
+         * @description Set this person's access: a tier (admin/member/viewer) and where it applies
+         *     — the whole organization, or a named list of spaces.
+         *
+         *     Their memberships in this org are replaced wholesale, which is what keeps the
+         *     model clean: one role per person per scope, no contradictory leftovers.
+         *
+         *     The owner is never a valid target here, including from themselves. Ordinary
+         *     admins are structural equals — any one of them could otherwise demote any
+         *     other, up to and including the person who registered the organization in
+         *     the first place, and "whoever acts last wins" is not the same thing as "who
+         *     the org actually recognizes as its owner". See POST .../transfer-ownership,
+         *     the one deliberate, atomic way ownership ever changes hands.
+         *
+         *     SMA-256: `custom_role` is the enterprise alternative to `tier` — a
+         *     role_definitions.name this account owns, assigned through the exact same
+         *     mechanism (memberships replaced wholesale). Reading a custom role's
+         *     permissions once assigned needs no change anywhere (security/scope.py's
+         *     resolver already treats any role_name generically); this endpoint is the
+         *     one place that decides WHICH role_name gets written.
+         */
+        patch: operations["update_member"];
+        trace?: never;
+    };
+    "/api/members/{user_id}/transfer-ownership": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Transfer Ownership
+         * @description Hand account_owner to another admin. Only the CURRENT owner may call
+         *     this — members.write alone is not enough, an ordinary admin cannot do this
+         *     to themselves, which is the entire point of the role existing.
+         *
+         *     The successor must already be an account_admin: ownership is not a way to
+         *     smuggle someone into the organization, only a way to reassign a standing
+         *     that already exists. Both membership rows are updated in one transaction —
+         *     there is never a moment with zero owners or two.
+         */
+        post: operations["transfer_ownership"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/org": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Org */
+        get: operations["get_org"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Update Org */
+        patch: operations["update_org"];
+        trace?: never;
+    };
+    "/api/mcp/client-info": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Client Info
+         * @description Public, unauthenticated — SMA-263. Cognito has no Dynamic Client
+         *     Registration, so a real MCP client needs this pre-registered client_id
+         *     up front to skip DCR; the Connect AI Tools panel reads this to build a
+         *     working `claude mcp add --client-id ...` command.
+         */
+        get: operations["get_client_info"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/mcp/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Connection Status
+         * @description No dedicated "connections" record exists (see ConnectAiToolsPanel's own
+         *     doc comment) -- every MCP tool call already writes an mcp.{tool} AuditEvent
+         *     (mcp/server.py:_call), so the most recent one for this user IS the
+         *     connection status, with no new table or migration needed.
+         */
+        get: operations["get_connection_status"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/mcp/elevation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Elevation */
+        get: operations["get_elevation"];
+        put?: never;
+        /** Grant Elevation */
+        post: operations["grant_elevation"];
+        /** Revoke Elevation */
+        delete: operations["revoke_elevation"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/audit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Audit Events
+         * @description function_id (SMA-54's activity feed) narrows to the entity types that
+         *     actually belong to one function — function/version/dataset/score/
+         *     experiment/deployment/plan/function_api_key — each filtered to that
+         *     function, dropping key/trace/org/space entirely (see _FUNCTION_ID_COL).
+         *
+         *     SMA-342: platform_admin now writes inside every org, unconditionally
+         *     audited — and unconditionally excluded here. This is the org-facing view
+         *     (the only one that exists), so platform-actor rows never surface through
+         *     it for anyone, platform staff included; the trail stays queryable
+         *     directly against audit_log for internal debugging.
+         */
+        get: operations["list_audit_events"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/billing/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Billing Summary */
+        get: operations["billing_summary"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/billing/breakdown/{event_type}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Billing Drilldown
+         * @description SMA-293: one metered item's spend, split by space and function.
+         */
+        get: operations["billing_drilldown"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/billing/invoices": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Invoices
+         * @description SMA-294. Read-only for orgs — created only by staff (below).
+         */
+        get: operations["list_invoices"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/platform/plan-rates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Plan Rates
+         * @description The Plan Menu's full history — every version of every plan, current
+         *     and past, so staff can see exactly what a plan looked like on any date
+         *     (client request, 2026-09-02: never overwritten, always a new dated row).
+         */
+        get: operations["list_plan_rates"];
+        put?: never;
+        /**
+         * Record Plan Rate
+         * @description Add a new dated version of a plan's terms — never edits an existing
+         *     row (see PlanRate's docstring). Backdating (effective_from <= today) is
+         *     allowed deliberately: it's how a plan gets its very first version.
+         */
+        post: operations["record_plan_rate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/platform/accounts/{account_id}/credits/topup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Comp Credits
+         * @description The trial mechanism, since there's no free tier — also any one-off
+         *     goodwill/correction credit. credits must be positive: a topup is always
+         *     additive; there is no separate "deduct" tool (V1 doesn't need one — the
+         *     ledger is append-only and already prices real consumption).
+         */
+        post: operations["comp_credits"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/platform/accounts/{account_id}/invoices": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Record Invoice */
+        post: operations["record_invoice"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/platform/accounts/{account_id}/ledger": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Inspect Ledger
+         * @description Staff's own ledger inspector — platform staff have no ambient data
+         *     access otherwise; this is their explicit, guarded, tenant-invisible
+         *     window, same framing as platform_overview. Grants (space_id always
+         *     NULL) are visible under any space GUC once account_id matches, so
+         *     they're fetched once; consumption carries a real space_id, so — same
+         *     re-pointing as billing_summary/overview() — it's fetched per space and
+         *     combined here in Python.
+         */
+        get: operations["inspect_ledger"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/platform/keys": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Platform Keys */
+        get: operations["list_platform_keys"];
+        put?: never;
+        /** Create Platform Key */
+        post: operations["create_platform_key"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/platform/keys/{key_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Delete Platform Key */
+        delete: operations["delete_platform_key"];
+        options?: never;
+        head?: never;
+        /** Patch Platform Key */
+        patch: operations["patch_platform_key"];
+        trace?: never;
+    };
+    "/api/platform/keys/{key_id}/rotate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Rotate Platform Key */
+        post: operations["rotate_platform_key"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/platform/keys/{key_id}/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Test Platform Key
+         * @description A lighter-weight test than BYOK's run_key_test (SMA-242's own scope is
+         *     list/add/rotate/test/disable/delete — a real inference probe reuses the
+         *     same resolver every real call goes through, not a second code path).
+         */
+        post: operations["test_platform_key"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/platform/judges": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Judges */
+        get: operations["list_judges"];
+        put?: never;
+        /** Create Judge */
+        post: operations["create_judge"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/platform/judges/{label}/versions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Version History */
+        get: operations["version_history"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/platform/judges/{label}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Edit Judge
+         * @description SMA-234: never overwrites — 201, because this always creates a new
+         *     version row, same "edit = new record" semantics as everywhere else in
+         *     the app that versions something.
+         */
+        patch: operations["edit_judge"];
+        trace?: never;
+    };
+    "/api/platform/judges/{label}/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Set Status */
+        patch: operations["set_status"];
+        trace?: never;
+    };
+    "/api/judges": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Judges For Picker */
+        get: operations["list_judges_for_picker"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/roles/catalogue": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Role Catalogue
+         * @description The tenant-safe permission catalogue a role editor may offer — never
+         *     includes platform.manage (SMA-255).
+         */
+        get: operations["role_catalogue"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/roles": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Roles */
+        get: operations["list_roles"];
+        put?: never;
+        /** Create Role */
+        post: operations["create_role"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/roles/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Delete Role */
+        delete: operations["delete_role"];
+        options?: never;
+        head?: never;
+        /** Update Role */
+        patch: operations["update_role"];
+        trace?: never;
+    };
+    "/api/danger-zone": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Requests */
+        get: operations["list_requests"];
+        put?: never;
+        /** Create Request */
+        post: operations["create_request"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/danger-zone/{request_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Cancel Request */
+        post: operations["cancel_request"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/platform/danger-zone": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List All Requests */
+        get: operations["list_all_requests"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/platform/danger-zone/{request_id}/execute": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Execute Request */
+        post: operations["execute_request"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/platform/danger-zone/{request_id}/decline": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Decline Request */
+        post: operations["decline_request"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/health": {
         parameters: {
             query?: never;
@@ -1334,18 +2516,75 @@ export interface components {
             plan_id: number;
             /** Created Evals */
             created_evals: number;
-            /** Gates */
-            gates: number;
             /** Skipped Not Runnable */
             skipped_not_runnable?: unknown;
         };
-        /** ApproveRequest */
-        ApproveRequest: {
+        /**
+         * AccountCreate
+         * @description Platform console: register a customer organization and invite its owner.
+         */
+        AccountCreate: {
+            /** Name */
+            name: string;
+            /** Owner Email */
+            owner_email: string;
             /**
-             * Actor
-             * @default approver
+             * Plan
+             * @default pro
              */
+            plan: string;
+            /** Owner Name */
+            owner_name?: string | null;
+            /** Billing Contact Email */
+            billing_contact_email?: string | null;
+            /**
+             * First Space
+             * @default
+             */
+            first_space: string;
+        };
+        /** AccountCreatedOut */
+        AccountCreatedOut: {
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /** Plan */
+            plan: string;
+            /** Credit Allowance */
+            credit_allowance?: number | null;
+            /** Billing Period Start */
+            billing_period_start?: string | null;
+            /** Contact Email */
+            contact_email: string;
+            space?: components["schemas"]["SpaceCreatedOut"] | null;
+            invitation: components["schemas"]["InvitationMintedOut"];
+        };
+        /**
+         * AuditEventOut
+         * @description One audit_log row (SMA-53). Raw — no label enrichment in v1; the viewer
+         *     reads entity/entity_id/action/actor/meta/at as-is.
+         */
+        AuditEventOut: {
+            /** Id */
+            id: number;
+            /** Entity */
+            entity: string;
+            /** Entity Id */
+            entity_id: number;
+            /** Action */
+            action: string;
+            /** Actor */
             actor: string;
+            /** Meta */
+            meta: {
+                [key: string]: unknown;
+            };
+            /**
+             * At
+             * Format: date-time
+             */
+            at: string;
         };
         /** AuthConfigOut */
         AuthConfigOut: {
@@ -1355,6 +2594,70 @@ export interface components {
             client_id: string;
             /** Domain */
             domain: string;
+        };
+        /** BillingBreakdownSlice */
+        BillingBreakdownSlice: {
+            /** Event Type */
+            event_type: string;
+            /** Credits */
+            credits: number;
+            /** Percent */
+            percent: number;
+        };
+        /** BillingBurnPoint */
+        BillingBurnPoint: {
+            /**
+             * Date
+             * Format: date
+             */
+            date: string;
+            /** Credits */
+            credits: number;
+        };
+        /** BillingDrillDownOut */
+        BillingDrillDownOut: {
+            /** Event Type */
+            event_type: string;
+            /** Rows */
+            rows: components["schemas"]["BillingDrillDownRow"][];
+        };
+        /** BillingDrillDownRow */
+        BillingDrillDownRow: {
+            /** Space Id */
+            space_id?: string | null;
+            /** Space Name */
+            space_name?: string | null;
+            /** Function Id */
+            function_id?: number | null;
+            /** Function Name */
+            function_name?: string | null;
+            /** Credits */
+            credits: number;
+        };
+        /** BillingSummaryOut */
+        BillingSummaryOut: {
+            /** Has Subscription */
+            has_subscription: boolean;
+            /** Plan */
+            plan?: string | null;
+            /** Credit Allowance */
+            credit_allowance?: number | null;
+            /** Balance */
+            balance?: number | null;
+            /** Period Start */
+            period_start?: string | null;
+            /** Period End */
+            period_end?: string | null;
+            /**
+             * Burn Down
+             * @default []
+             */
+            burn_down: components["schemas"]["BillingBurnPoint"][];
+            /**
+             * Breakdown
+             * @default []
+             */
+            breakdown: components["schemas"]["BillingBreakdownSlice"][];
         };
         /** Body_upload_rows */
         Body_upload_rows: {
@@ -1389,44 +2692,12 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
-        /** ConsoleKeyOut */
-        ConsoleKeyOut: {
-            /** Id */
-            id: number;
-            /** Provider */
-            provider: string;
-            /** Label */
-            label: string;
-            /** Key Hint */
-            key_hint: string;
-            /** Status */
-            status: string;
-            /** Space Id */
-            space_id: string | null;
-            /** Shared Space Ids */
-            shared_space_ids?: unknown[] | null;
-            /** Expires At */
-            expires_at: string | null;
-            /** Last Used At */
-            last_used_at: string | null;
-            /** Last Error */
-            last_error: string | null;
-            /** Created By */
-            created_by: string;
-            /**
-             * Created At
-             * Format: date-time
-             */
-            created_at: string;
-            /** Space Name */
-            space_name?: string | null;
-        };
         /** ConsoleOut */
         ConsoleOut: {
             /** Spaces */
             spaces: components["schemas"]["ConsoleSpaceRef"][];
             /** Keys */
-            keys: components["schemas"]["ConsoleKeyOut"][];
+            keys: components["schemas"]["KeyOut"][];
         };
         /** ConsoleSpaceRef */
         ConsoleSpaceRef: {
@@ -1475,6 +2746,13 @@ export interface components {
             /** By Source */
             by_source: components["schemas"]["SourceSpend"][];
         };
+        /** CreditTopupCreate */
+        CreditTopupCreate: {
+            /** Credits */
+            credits: number;
+            /** Reason */
+            reason?: string | null;
+        };
         /** DatasetCreate */
         DatasetCreate: {
             /** Name */
@@ -1508,6 +2786,19 @@ export interface components {
             /** Archived */
             archived?: boolean | null;
         };
+        /** DefaultSpaceOut */
+        DefaultSpaceOut: {
+            /** Default Space Id */
+            default_space_id: string;
+        };
+        /** DefaultSpaceSet */
+        DefaultSpaceSet: {
+            /**
+             * Space Id
+             * Format: uuid
+             */
+            space_id: string;
+        };
         /** DeletePlanOut */
         DeletePlanOut: {
             /** Id */
@@ -1540,6 +2831,21 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+        };
+        /**
+         * DowngradeSweepOut
+         * @description SMA-259/260's result — what the sweep actually did, so a staff caller
+         *     (or the pytest asserting against it) sees the effect, not just a 204.
+         */
+        DowngradeSweepOut: {
+            /** Roles Archived */
+            roles_archived: string[];
+            /** Remapped */
+            remapped: {
+                [key: string]: string;
+            }[];
+            /** Overrides Removed */
+            overrides_removed: number;
         };
         /**
          * ExperimentCreate
@@ -1599,6 +2905,10 @@ export interface components {
             } | null;
             /** Error */
             error: string | null;
+            /** Progress */
+            progress?: {
+                [key: string]: unknown;
+            } | null;
             /** Cost */
             cost: number;
             /**
@@ -1681,6 +2991,23 @@ export interface components {
                 [key: string]: unknown;
             };
         };
+        /** FunctionEditorIn */
+        FunctionEditorIn: {
+            /** Email */
+            email: string;
+        };
+        /**
+         * FunctionEditorOut
+         * @description SMA-48: one per-function editor grant.
+         */
+        FunctionEditorOut: {
+            /** User Id */
+            user_id: string;
+            /** Email */
+            email: string;
+            /** Name */
+            name?: string | null;
+        };
         /** FunctionOut */
         FunctionOut: {
             /** Id */
@@ -1717,10 +3044,19 @@ export interface components {
             /** Description */
             description?: string | null;
         };
-        /** GatePatch */
-        GatePatch: {
-            /** Gate */
-            gate: boolean;
+        /** GrantedPermissionOut */
+        GrantedPermissionOut: {
+            /** Permission */
+            permission: string;
+            /** Scope */
+            scope: string;
+            /** Space */
+            space?: string | null;
+            /**
+             * Grant Type
+             * @default grant
+             */
+            grant_type: string;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -1791,6 +3127,166 @@ export interface components {
                 [key: string]: number;
             };
         };
+        /** InvitationAcceptedOut */
+        InvitationAcceptedOut: {
+            /** User Id */
+            user_id: string;
+            /** Email */
+            email: string;
+            /** Organization */
+            organization?: string | null;
+            /** Role */
+            role: string;
+        };
+        /**
+         * InvitationClaimOut
+         * @description Result of claiming by verified email at sign-in — usually zero.
+         */
+        InvitationClaimOut: {
+            /** Claimed */
+            claimed: number;
+            /** Organizations */
+            organizations: string[];
+        };
+        /** InvitationCreate */
+        InvitationCreate: {
+            /** Email */
+            email: string;
+            /** Role */
+            role: string;
+            /** Space */
+            space?: string | null;
+        };
+        /** InvitationMintedOut */
+        InvitationMintedOut: {
+            /** Id */
+            id: string;
+            /** Email */
+            email: string;
+            /** Role */
+            role: string;
+            /** Scope */
+            scope: string;
+            /** Space */
+            space?: string | null;
+            /** Status */
+            status: string;
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Token */
+            token: string;
+            /** Accept Path */
+            accept_path: string;
+            /**
+             * Delivery
+             * @default skipped
+             */
+            delivery: string;
+        };
+        /** InvitationOut */
+        InvitationOut: {
+            /** Id */
+            id: string;
+            /** Email */
+            email: string;
+            /** Role */
+            role: string;
+            /** Scope */
+            scope: string;
+            /** Space */
+            space?: string | null;
+            /** Status */
+            status: string;
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+        };
+        /**
+         * InvitationPreviewOut
+         * @description Shown on the join page before sign-in — holding the token is the proof.
+         */
+        InvitationPreviewOut: {
+            /** Email */
+            email: string;
+            /** Organization */
+            organization?: string | null;
+            /** Space */
+            space?: string | null;
+            /** Role */
+            role: string;
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+        };
+        /** InvoiceCreate */
+        InvoiceCreate: {
+            /**
+             * Period Start
+             * Format: date
+             */
+            period_start: string;
+            /**
+             * Period End
+             * Format: date
+             */
+            period_end: string;
+            /** Amount */
+            amount: number;
+            /**
+             * Status
+             * @default due
+             */
+            status: string;
+            /** Reference */
+            reference?: string | null;
+        };
+        /** InvoiceOut */
+        InvoiceOut: {
+            /** Id */
+            id: number;
+            /** Account Id */
+            account_id: string;
+            /**
+             * Period Start
+             * Format: date
+             */
+            period_start: string;
+            /**
+             * Period End
+             * Format: date
+             */
+            period_end: string;
+            /** Amount */
+            amount: number;
+            /** Status */
+            status: string;
+            /** Reference */
+            reference?: string | null;
+            /** Created By */
+            created_by: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+        };
         /** InvokeKeyMintedOut */
         InvokeKeyMintedOut: {
             /** Id */
@@ -1837,10 +3333,26 @@ export interface components {
             /** Last Used At */
             last_used_at?: string | null;
         };
-        /** KeyAssign */
-        KeyAssign: {
-            /** Space Id */
-            space_id: string | null;
+        /** JudgeCreate */
+        JudgeCreate: {
+            /** Label */
+            label: string;
+            /** Model */
+            model: string;
+            /** Prompt */
+            prompt: string;
+        };
+        /** JudgeEdit */
+        JudgeEdit: {
+            /** Model */
+            model?: string | null;
+            /** Prompt */
+            prompt?: string | null;
+        };
+        /** JudgeStatusPatch */
+        JudgeStatusPatch: {
+            /** Status */
+            status: string;
         };
         /** KeyCreate */
         KeyCreate: {
@@ -1855,12 +3367,6 @@ export interface components {
             secret: {
                 [key: string]: unknown;
             };
-            /**
-             * Scope Level
-             * @default org
-             * @enum {string}
-             */
-            scope_level: "org" | "space";
             /** Expires At */
             expires_at?: string | null;
         };
@@ -1876,8 +3382,6 @@ export interface components {
             key_hint: string;
             /** Status */
             status: string;
-            /** Space Id */
-            space_id: string | null;
             /** Shared Space Ids */
             shared_space_ids?: unknown[] | null;
             /** Expires At */
@@ -1886,6 +3390,8 @@ export interface components {
             last_used_at: string | null;
             /** Last Error */
             last_error: string | null;
+            /** Token Cap */
+            token_cap?: number | null;
             /** Created By */
             created_by: string;
             /**
@@ -1896,10 +3402,14 @@ export interface components {
         };
         /** KeyPatch */
         KeyPatch: {
+            /** Label */
+            label?: string | null;
             /** Status */
             status?: ("active" | "disabled") | null;
             /** Shared Space Ids */
             shared_space_ids?: string[] | null;
+            /** Token Cap */
+            token_cap?: number | null;
         };
         /** KeyRotate */
         KeyRotate: {
@@ -1917,6 +3427,61 @@ export interface components {
             /** Latency Ms */
             latency_ms: number;
         };
+        /** LedgerEventOut */
+        LedgerEventOut: {
+            /** Id */
+            id: number;
+            /** Account Id */
+            account_id: string;
+            /** Space Id */
+            space_id?: string | null;
+            /** Function Id */
+            function_id?: number | null;
+            /** Kind */
+            kind: string;
+            /** Event Type */
+            event_type: string;
+            /** Quantity */
+            quantity?: number | null;
+            /** Rate */
+            rate?: number | null;
+            /** Credits */
+            credits: number;
+            /** Source Type */
+            source_type?: string | null;
+            /** Source Id */
+            source_id?: number | null;
+            /** Actor */
+            actor: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+        };
+        /** McpClientInfoOut */
+        McpClientInfoOut: {
+            /** Client Id */
+            client_id?: string | null;
+        };
+        /** McpConnectionStatusOut */
+        McpConnectionStatusOut: {
+            /** Connected */
+            connected: boolean;
+            /** Last Used At */
+            last_used_at?: string | null;
+            /** Last Tool */
+            last_tool?: string | null;
+        };
+        /** McpElevationOut */
+        McpElevationOut: {
+            /** Elevated */
+            elevated: boolean;
+            /** Self Service Locked */
+            self_service_locked: boolean;
+            /** Can Change */
+            can_change: boolean;
+        };
         /** MeOut */
         MeOut: {
             /** User Id */
@@ -1929,10 +3494,95 @@ export interface components {
             is_platform_admin: boolean;
             /** Account Id */
             account_id: string;
+            /** Account Name */
+            account_name?: string | null;
             /** Space Id */
             space_id: string;
+            /** Default Space Id */
+            default_space_id?: string | null;
             /** Spaces */
-            spaces: components["schemas"]["SpaceRef"][];
+            spaces: components["schemas"]["MeSpaceRef"][];
+            /**
+             * Organizations
+             * @default []
+             */
+            organizations: components["schemas"]["SpaceRef"][];
+            /** Mcp Elevated */
+            mcp_elevated?: boolean | null;
+        };
+        /**
+         * MeSpaceRef
+         * @description A space in the switcher list, plus its defaults (SMA-51) — a caller who
+         *     already knows the current space_id looks its entry up here rather than
+         *     fetching the whole /overview just to read default_model/default_temperature.
+         */
+        MeSpaceRef: {
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /** Default Model */
+            default_model?: string | null;
+            /** Default Temperature */
+            default_temperature?: number | null;
+        };
+        /**
+         * MemberOut
+         * @description One row of the org-admin Users screen. `spaces` is empty when `scope` is
+         *     "account" — that membership already covers every space in the org.
+         */
+        MemberOut: {
+            /** Id */
+            id: string;
+            /** Email */
+            email: string;
+            /** Name */
+            name?: string | null;
+            /** Role */
+            role: string;
+            /** Scope */
+            scope: string;
+            /** Spaces */
+            spaces: string[];
+            /** Status */
+            status: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+        };
+        /**
+         * MemberPermissionsOut
+         * @description Role baseline and individual attachments kept apart, so an admin can see
+         *     WHERE each right comes from before changing anything.
+         */
+        MemberPermissionsOut: {
+            /** Roles */
+            roles: string[];
+            /** From Roles */
+            from_roles: string[];
+            /** Granted */
+            granted: components["schemas"]["GrantedPermissionOut"][];
+            /** Effective */
+            effective: string[];
+        };
+        /**
+         * MemberUpdate
+         * @description Set a person's access. `spaces` empty/None means the whole organization.
+         *
+         *     E30: exactly one of `tier` (builtin admin|member|viewer) or `custom_role`
+         *     (a role_definitions.name this account owns) must be given — never both.
+         *     Everything else about the request (spaces, self-demotion/last-admin
+         *     guardrails) applies identically either way.
+         */
+        MemberUpdate: {
+            /** Tier */
+            tier?: string | null;
+            /** Custom Role */
+            custom_role?: string | null;
+            /** Spaces */
+            spaces?: string[] | null;
         };
         /** ModelSpend */
         ModelSpend: {
@@ -1942,6 +3592,168 @@ export interface components {
             calls: number;
             /** Cost */
             cost: number;
+        };
+        /**
+         * OrgOut
+         * @description The org-profile pane (SMA-187/188). slug is read-only after
+         *     registration — no update endpoint accepts it. plan is read-only here
+         *     too (SMA-300) — plan writes are owned by Billing (E12 F5); this pane
+         *     only shows it, linking out rather than editing it. contact_email is
+         *     the org's billing contact (SMA-299) — same column SMA-187 shipped as a
+         *     general contact address, now the one E12 invoicing reads as the
+         *     invoice destination (see platform_overview / OrgBillingDrawer).
+         */
+        OrgOut: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Name */
+            name: string;
+            /** Slug */
+            slug?: string | null;
+            /** Plan */
+            plan?: string | null;
+            /** Contact Name */
+            contact_name?: string | null;
+            /** Contact Email */
+            contact_email?: string | null;
+        };
+        /**
+         * OrgRequestCreate
+         * @description SMA-302: typed confirmation — confirm_name must exactly match the
+         *     organization's current name, the same "type the name to confirm"
+         *     convention this kind of irreversible-sounding action commonly uses.
+         */
+        OrgRequestCreate: {
+            /** Type */
+            type: string;
+            /** Confirm Name */
+            confirm_name: string;
+        };
+        /** OrgRequestDecision */
+        OrgRequestDecision: {
+            /** Outcome */
+            outcome?: string | null;
+        };
+        /** OrgRequestOut */
+        OrgRequestOut: {
+            /** Id */
+            id: number;
+            /** Account Id */
+            account_id: string;
+            /** Account Name */
+            account_name: string;
+            /** Type */
+            type: string;
+            /** Status */
+            status: string;
+            /** Requested By */
+            requested_by: string;
+            /**
+             * Requested At
+             * Format: date-time
+             */
+            requested_at: string;
+            /** Decided By */
+            decided_by?: string | null;
+            /** Decided At */
+            decided_at?: string | null;
+            /** Outcome */
+            outcome?: string | null;
+        };
+        /** OrgUpdate */
+        OrgUpdate: {
+            /** Name */
+            name?: string | null;
+            /** Contact Name */
+            contact_name?: string | null;
+            /** Contact Email */
+            contact_email?: string | null;
+        };
+        /** OrgUsageByKey */
+        OrgUsageByKey: {
+            /** Key Id */
+            key_id: number;
+            /** Provider */
+            provider?: string | null;
+            /** Label */
+            label?: string | null;
+            /** Calls */
+            calls: number;
+            /** Tokens In */
+            tokens_in: number;
+            /** Tokens Out */
+            tokens_out: number;
+        };
+        /** OrgUsageByModel */
+        OrgUsageByModel: {
+            /** Model */
+            model: string;
+            /** Calls */
+            calls: number;
+            /** Tokens In */
+            tokens_in: number;
+            /** Tokens Out */
+            tokens_out: number;
+        };
+        /** OrgUsageBySourceClass */
+        OrgUsageBySourceClass: {
+            /** Source Class */
+            source_class: string;
+            /** Calls */
+            calls: number;
+            /** Tokens In */
+            tokens_in: number;
+            /** Tokens Out */
+            tokens_out: number;
+        };
+        /** OrgUsageBySpace */
+        OrgUsageBySpace: {
+            /** Space Id */
+            space_id: string;
+            /** Space Name */
+            space_name?: string | null;
+            /** Calls */
+            calls: number;
+            /** Tokens In */
+            tokens_in: number;
+            /** Tokens Out */
+            tokens_out: number;
+        };
+        /** OrgUsageDay */
+        OrgUsageDay: {
+            /**
+             * Date
+             * Format: date
+             */
+            date: string;
+            /** Calls */
+            calls: number;
+            /** Tokens In */
+            tokens_in: number;
+            /** Tokens Out */
+            tokens_out: number;
+        };
+        /** OrgUsageOut */
+        OrgUsageOut: {
+            /** Calls */
+            calls: number;
+            /** Tokens In */
+            tokens_in: number;
+            /** Tokens Out */
+            tokens_out: number;
+            /** By Key */
+            by_key: components["schemas"]["OrgUsageByKey"][];
+            /** By Model */
+            by_model: components["schemas"]["OrgUsageByModel"][];
+            /** By Space */
+            by_space: components["schemas"]["OrgUsageBySpace"][];
+            /** By Source Class */
+            by_source_class: components["schemas"]["OrgUsageBySourceClass"][];
+            /** Time Series */
+            time_series: components["schemas"]["OrgUsageDay"][];
         };
         /** OverviewOut */
         OverviewOut: {
@@ -1955,6 +3767,44 @@ export interface components {
             totals: {
                 [key: string]: number;
             };
+        };
+        /**
+         * OwnershipTransferOut
+         * @description Both rows the transfer changed — the caller's own new (lower) standing
+         *     alongside the successor's, so the UI never has to guess which one it is.
+         */
+        OwnershipTransferOut: {
+            new_owner: components["schemas"]["MemberOut"];
+            you: components["schemas"]["MemberOut"];
+        };
+        /**
+         * PermissionCatalogueOut
+         * @description Everything grantable — a permission picker renders from this, not from a
+         *     hard-coded list, so new verbs appear automatically.
+         */
+        PermissionCatalogueOut: {
+            /** Permissions */
+            permissions: string[];
+            /** Domains */
+            domains: {
+                [key: string]: string[];
+            };
+            /** Roles */
+            roles: {
+                [key: string]: string[];
+            };
+        };
+        /** PermissionGrantIn */
+        PermissionGrantIn: {
+            /** Permission */
+            permission: string;
+            /** Space */
+            space?: string | null;
+            /**
+             * Grant Type
+             * @default grant
+             */
+            grant_type: string;
         };
         /** PlanBriefOut */
         PlanBriefOut: {
@@ -1970,8 +3820,6 @@ export interface components {
             version_id?: number | null;
             /** Score Count */
             score_count: number;
-            /** Gate Count */
-            gate_count: number;
             /** Requires Dataset */
             requires_dataset: boolean;
             /** Min Repeats */
@@ -2031,6 +3879,203 @@ export interface components {
             tokens_out?: number | null;
             /** Created At */
             created_at?: string | null;
+        };
+        /** PlanRateCreate */
+        PlanRateCreate: {
+            /** Plan */
+            plan: string;
+            /** Credit Allowance */
+            credit_allowance: number;
+            /**
+             * Features
+             * @default []
+             */
+            features: string[];
+            /**
+             * Effective From
+             * Format: date
+             */
+            effective_from: string;
+        };
+        /**
+         * PlanRateOut
+         * @description The Plan Menu (client request, 2026-09-02): one version of a named
+         *     plan's terms. `features` is stored but not enforced anywhere yet — see
+         *     PlanRate's own docstring.
+         */
+        PlanRateOut: {
+            /** Id */
+            id: number;
+            /** Plan */
+            plan: string;
+            /** Credit Allowance */
+            credit_allowance: number;
+            /**
+             * Features
+             * @default []
+             */
+            features: string[];
+            /**
+             * Effective From
+             * Format: date
+             */
+            effective_from: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+        };
+        /** PlatformKeyCreate */
+        PlatformKeyCreate: {
+            /** Provider */
+            provider: string;
+            /**
+             * Label
+             * @default
+             */
+            label: string;
+            /** Secret */
+            secret: {
+                [key: string]: unknown;
+            };
+            /** Expires At */
+            expires_at?: string | null;
+        };
+        /** PlatformKeyOut */
+        PlatformKeyOut: {
+            /** Id */
+            id: number;
+            /** Provider */
+            provider: string;
+            /** Label */
+            label: string;
+            /** Key Hint */
+            key_hint: string;
+            /** Status */
+            status: string;
+            /** Expires At */
+            expires_at: string | null;
+            /** Last Used At */
+            last_used_at: string | null;
+            /** Last Error */
+            last_error: string | null;
+            /** Created By */
+            created_by: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+        };
+        /** PlatformKeyPatch */
+        PlatformKeyPatch: {
+            /** Label */
+            label?: string | null;
+            /** Status */
+            status?: ("active" | "disabled") | null;
+        };
+        /** PlatformKeyRotate */
+        PlatformKeyRotate: {
+            /** Secret */
+            secret: {
+                [key: string]: unknown;
+            };
+        };
+        /** PlatformUsageByKey */
+        PlatformUsageByKey: {
+            /** Key Id */
+            key_id?: number | null;
+            /** Provider */
+            provider?: string | null;
+            /** Label */
+            label?: string | null;
+            /** Calls */
+            calls: number;
+            /** Tokens In */
+            tokens_in: number;
+            /** Tokens Out */
+            tokens_out: number;
+            /** Cost */
+            cost: number;
+        };
+        /** PlatformUsageByModel */
+        PlatformUsageByModel: {
+            /** Model */
+            model: string;
+            /** Calls */
+            calls: number;
+            /** Tokens In */
+            tokens_in: number;
+            /** Tokens Out */
+            tokens_out: number;
+            /** Cost */
+            cost: number;
+        };
+        /** PlatformUsageByOrg */
+        PlatformUsageByOrg: {
+            /** Account Id */
+            account_id: string;
+            /** Org Name */
+            org_name?: string | null;
+            /** Calls */
+            calls: number;
+            /** Tokens In */
+            tokens_in: number;
+            /** Tokens Out */
+            tokens_out: number;
+            /** Cost */
+            cost: number;
+        };
+        /** PlatformUsageBySource */
+        PlatformUsageBySource: {
+            /** Source */
+            source: string;
+            /** Calls */
+            calls: number;
+            /** Tokens In */
+            tokens_in: number;
+            /** Tokens Out */
+            tokens_out: number;
+            /** Cost */
+            cost: number;
+        };
+        /** PlatformUsageDay */
+        PlatformUsageDay: {
+            /**
+             * Date
+             * Format: date
+             */
+            date: string;
+            /** Calls */
+            calls: number;
+            /** Tokens In */
+            tokens_in: number;
+            /** Tokens Out */
+            tokens_out: number;
+            /** Cost */
+            cost: number;
+        };
+        /** PlatformUsageRollupOut */
+        PlatformUsageRollupOut: {
+            /** Calls */
+            calls: number;
+            /** Tokens In */
+            tokens_in: number;
+            /** Tokens Out */
+            tokens_out: number;
+            /** Cost */
+            cost: number;
+            /** By Key */
+            by_key: components["schemas"]["PlatformUsageByKey"][];
+            /** By Model */
+            by_model: components["schemas"]["PlatformUsageByModel"][];
+            /** By Org */
+            by_org: components["schemas"]["PlatformUsageByOrg"][];
+            /** By Source */
+            by_source: components["schemas"]["PlatformUsageBySource"][];
+            /** Time Series */
+            time_series: components["schemas"]["PlatformUsageDay"][];
         };
         /** PlaygroundOut */
         PlaygroundOut: {
@@ -2105,17 +4150,63 @@ export interface components {
             /** Version */
             version: number;
         };
-        /** RejectRequest */
-        RejectRequest: {
-            /** Comment */
-            comment: string;
-        };
         /** RemovePlanScoreOut */
         RemovePlanScoreOut: {
             /** Score Id */
             score_id: number;
             /** Outcome */
             outcome: string;
+        };
+        /**
+         * RoleCatalogueOut
+         * @description Same shape as PermissionCatalogueOut, minus platform.manage — the
+         *     tenant-safe subset a custom-role editor may ever offer (SMA-255).
+         */
+        RoleCatalogueOut: {
+            /** Permissions */
+            permissions: string[];
+            /** Domains */
+            domains: {
+                [key: string]: string[];
+            };
+        };
+        /** RoleCreate */
+        RoleCreate: {
+            /** Layer */
+            layer: string;
+            /** Display Name */
+            display_name: string;
+            /** Permissions */
+            permissions: string[];
+        };
+        /** RoleOut */
+        RoleOut: {
+            /** Name */
+            name: string;
+            /** Layer */
+            layer: string;
+            /** Display Name */
+            display_name: string;
+            /** Status */
+            status: string;
+            /** Permissions */
+            permissions: string[];
+            /** Assigned Count */
+            assigned_count: number;
+            /** Created By */
+            created_by?: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+        };
+        /** RolePatch */
+        RolePatch: {
+            /** Display Name */
+            display_name?: string | null;
+            /** Permissions */
+            permissions?: string[] | null;
         };
         /** RowIn */
         RowIn: {
@@ -2210,11 +4301,6 @@ export interface components {
             config: {
                 [key: string]: unknown;
             };
-            /**
-             * Gate
-             * @default false
-             */
-            gate: boolean;
             /** Provenance */
             provenance?: string | null;
         };
@@ -2232,8 +4318,6 @@ export interface components {
             config: {
                 [key: string]: unknown;
             };
-            /** Gate */
-            gate: boolean;
             /** Provenance */
             provenance: string | null;
             /** Version */
@@ -2256,8 +4340,6 @@ export interface components {
             temperature?: number | null;
             /** Score */
             score: string;
-            /** Gate */
-            gate: boolean;
             /** Mean */
             mean?: number | null;
             /** Std */
@@ -2273,10 +4355,69 @@ export interface components {
             /** Experiment Name */
             experiment_name?: string | null;
         };
+        /** SessionOrgOut */
+        SessionOrgOut: {
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /** Role */
+            role: string;
+            /** Via */
+            via: string;
+            /** Spaces */
+            spaces: components["schemas"]["SessionSpaceOut"][];
+        };
+        /** SessionOut */
+        SessionOut: {
+            /** User Id */
+            user_id: string;
+            /** Email */
+            email: string;
+            /** Name */
+            name?: string | null;
+            /** Is Owner */
+            is_owner: boolean;
+            /** Organizations */
+            organizations: components["schemas"]["SessionOrgOut"][];
+        };
+        /** SessionSpaceOut */
+        SessionSpaceOut: {
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+        };
         /** SnapshotCreate */
         SnapshotCreate: {
             /** Label */
             label?: string | null;
+        };
+        /**
+         * SnapshotDetailOut
+         * @description One snapshot with its frozen rows — the read the list view deliberately
+         *     omits, so opening a version's contents never rides along with the history.
+         */
+        SnapshotDetailOut: {
+            /** Id */
+            id: number;
+            /** Dataset Id */
+            dataset_id: number;
+            /** Content Hash */
+            content_hash: string;
+            /** Label */
+            label?: string | null;
+            /** Row Count */
+            row_count: number;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Rows */
+            rows: {
+                [key: string]: unknown;
+            }[];
         };
         /**
          * SnapshotHistoryOut
@@ -2336,6 +4477,10 @@ export interface components {
             id: string;
             /** Name */
             name: string;
+            /** Default Model */
+            default_model?: string | null;
+            /** Default Temperature */
+            default_temperature?: number | null;
         };
         /** SpaceRef */
         SpaceRef: {
@@ -2358,6 +4503,60 @@ export interface components {
             scores: number;
             /** Cost */
             cost: number;
+            /**
+             * Archived
+             * @default false
+             */
+            archived: boolean;
+            /** Default Model */
+            default_model?: string | null;
+            /** Default Temperature */
+            default_temperature?: number | null;
+        };
+        /**
+         * SpaceUpdate
+         * @description PATCH /api/spaces/{id}. Every field is optional so a caller can send
+         *     just the ones it changed; a field left out is left alone (same convention
+         *     as OrgUpdate) — there is no way to clear a default back to null once set.
+         */
+        SpaceUpdate: {
+            /** Name */
+            name?: string | null;
+            /** Default Model */
+            default_model?: string | null;
+            /** Default Temperature */
+            default_temperature?: number | null;
+        };
+        /** SubscriptionOut */
+        SubscriptionOut: {
+            /** Id */
+            id: string;
+            /** Plan */
+            plan: string;
+            /** Status */
+            status: string;
+            /** Credit Allowance */
+            credit_allowance?: number | null;
+            /** Billing Period Start */
+            billing_period_start?: string | null;
+        };
+        /**
+         * SubscriptionUpdate
+         * @description PATCH /api/platform/accounts/{id}/subscription (SMA-282). Every field
+         *     optional so staff can send just what changed — a field left out is left
+         *     alone, same convention as SpaceUpdate/OrgUpdate. There is no way to clear
+         *     billing_period_start back to null once set through this endpoint (matches
+         *     those conventions too). No credit_allowance field: it's never taken from
+         *     the caller, only ever derived from the Plan Menu when `plan` is set — see
+         *     update_subscription()'s docstring.
+         */
+        SubscriptionUpdate: {
+            /** Plan */
+            plan?: string | null;
+            /** Status */
+            status?: string | null;
+            /** Billing Period Start */
+            billing_period_start?: string | null;
         };
         /** TokenMintedOut */
         TokenMintedOut: {
@@ -2505,6 +4704,16 @@ export interface components {
             version?: number | null;
             /** Source */
             source: string;
+        };
+        /**
+         * UpgradeRestoreOut
+         * @description The other half of DowngradeSweepOut — which archived custom roles
+         *     just came back on re-upgrading to enterprise. Never includes a role the
+         *     org deleted themselves; see roles/service.py upgrade_restore().
+         */
+        UpgradeRestoreOut: {
+            /** Roles Restored */
+            roles_restored: string[];
         };
         /** UploadResultOut */
         UploadResultOut: {
@@ -2774,6 +4983,38 @@ export interface operations {
             };
         };
     };
+    session: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-dev-user"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     me: {
         parameters: {
             query?: never;
@@ -2797,6 +5038,46 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MeOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_default_space: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DefaultSpaceSet"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DefaultSpaceOut"];
                 };
             };
             /** @description Validation Error */
@@ -2850,9 +5131,125 @@ export interface operations {
             };
         };
     };
-    overview: {
+    archive_space: {
         parameters: {
             query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                space_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_space: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                space_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SpaceUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SpaceCreatedOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    restore_space: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                space_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    overview: {
+        parameters: {
+            query?: {
+                include_archived?: boolean;
+            };
             header?: {
                 authorization?: string | null;
                 "x-account"?: string | null;
@@ -3026,6 +5423,164 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_account: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AccountCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountCreatedOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_subscription: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                account_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SubscriptionUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SubscriptionOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    downgrade_sweep: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                account_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DowngradeSweepOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    upgrade_restore: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                account_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UpgradeRestoreOut"];
                 };
             };
             /** @description Validation Error */
@@ -3233,6 +5788,123 @@ export interface operations {
             };
         };
     };
+    list_function_editors: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                fn_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FunctionEditorOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    grant_function_editor: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                fn_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FunctionEditorIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FunctionEditorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    revoke_function_editor: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                fn_id: number;
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_versions: {
         parameters: {
             query?: never;
@@ -3292,6 +5964,82 @@ export interface operations {
                 "application/json": components["schemas"]["VersionCreate"];
             };
         };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VersionOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_version_yaml: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                v_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_version_from_yaml: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                fn_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
             201: {
@@ -3393,44 +6141,6 @@ export interface operations {
             };
         };
     };
-    submit_version: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-                "x-account"?: string | null;
-                "x-space"?: string | null;
-                "x-dev-user"?: string | null;
-                "x-dev-account"?: string | null;
-                "x-dev-space"?: string | null;
-            };
-            path: {
-                v_id: number;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["VersionOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     get_artifact: {
         parameters: {
             query?: never;
@@ -3496,90 +6206,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TypesOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    reject_version: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-                "x-account"?: string | null;
-                "x-space"?: string | null;
-                "x-dev-user"?: string | null;
-                "x-dev-account"?: string | null;
-                "x-dev-space"?: string | null;
-            };
-            path: {
-                v_id: number;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["RejectRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["VersionOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    approve_version: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-                "x-account"?: string | null;
-                "x-space"?: string | null;
-                "x-dev-user"?: string | null;
-                "x-dev-account"?: string | null;
-                "x-dev-space"?: string | null;
-            };
-            path: {
-                v_id: number;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ApproveRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["VersionOut"];
                 };
             };
             /** @description Validation Error */
@@ -3913,6 +6539,82 @@ export interface operations {
             };
         };
     };
+    get_snapshot: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                ds_id: number;
+                snap_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SnapshotDetailOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_snapshot: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                ds_id: number;
+                snap_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     delete_dataset: {
         parameters: {
             query?: never;
@@ -4137,48 +6839,6 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    toggle_gate: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-                "x-account"?: string | null;
-                "x-space"?: string | null;
-                "x-dev-user"?: string | null;
-                "x-dev-account"?: string | null;
-                "x-dev-space"?: string | null;
-            };
-            path: {
-                score_id: number;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["GatePatch"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ScoreOut"];
-                };
             };
             /** @description Validation Error */
             422: {
@@ -4449,6 +7109,44 @@ export interface operations {
         responses: {
             /** @description Successful Response */
             201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExperimentOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancel_experiment: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                exp_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -4771,6 +7469,85 @@ export interface operations {
             };
         };
     };
+    platform_usage_rollup: {
+        parameters: {
+            query?: {
+                source?: string | null;
+                start?: string | null;
+                end?: string | null;
+            };
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlatformUsageRollupOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    org_usage: {
+        parameters: {
+            query?: {
+                start?: string | null;
+                end?: string | null;
+            };
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrgUsageOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_keys: {
         parameters: {
             query?: never;
@@ -4870,48 +7647,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ConsoleOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    assign_key: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-                "x-account"?: string | null;
-                "x-space"?: string | null;
-                "x-dev-user"?: string | null;
-                "x-dev-account"?: string | null;
-                "x-dev-space"?: string | null;
-            };
-            path: {
-                key_id: number;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["KeyAssign"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["KeyOut"];
                 };
             };
             /** @description Validation Error */
@@ -6109,6 +8844,2009 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RunOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_members: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemberOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_invitations: {
+        parameters: {
+            query?: {
+                include_closed?: boolean;
+            };
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvitationOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    invite_member: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InvitationCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvitationMintedOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    revoke_invitation: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                invitation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    preview_invitation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                token: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvitationPreviewOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    accept_invitation: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-dev-user"?: string | null;
+            };
+            path: {
+                token: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvitationAcceptedOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    claim_pending: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-dev-user"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvitationClaimOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    permission_catalogue: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PermissionCatalogueOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    member_permissions: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemberPermissionsOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    grant_permission: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PermissionGrantIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemberPermissionsOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    revoke_permission: {
+        parameters: {
+            query?: {
+                space?: string | null;
+            };
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                user_id: string;
+                permission: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    deactivate_member: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_member: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MemberUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemberOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    transfer_ownership: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OwnershipTransferOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_org: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrgOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_org: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OrgUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrgOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_client_info: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["McpClientInfoOut"];
+                };
+            };
+        };
+    };
+    get_connection_status: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["McpConnectionStatusOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_elevation: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["McpElevationOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    grant_elevation: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["McpElevationOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    revoke_elevation: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["McpElevationOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_audit_events: {
+        parameters: {
+            query?: {
+                entity?: string | null;
+                function_id?: number | null;
+                before?: number | null;
+                limit?: number;
+            };
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuditEventOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    billing_summary: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BillingSummaryOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    billing_drilldown: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                event_type: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BillingDrillDownOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_invoices: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvoiceOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_plan_rates: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlanRateOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    record_plan_rate: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PlanRateCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlanRateOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    comp_credits: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                account_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreditTopupCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LedgerEventOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    record_invoice: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                account_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InvoiceCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvoiceOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    inspect_ledger: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                account_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LedgerEventOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_platform_keys: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlatformKeyOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_platform_key: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PlatformKeyCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlatformKeyOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_platform_key: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                key_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    patch_platform_key: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                key_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PlatformKeyPatch"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlatformKeyOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    rotate_platform_key: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                key_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PlatformKeyRotate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlatformKeyOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    test_platform_key: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                key_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_judges: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_judge: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["JudgeCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    version_history: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                label: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    edit_judge: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                label: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["JudgeEdit"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_status: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                label: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["JudgeStatusPatch"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_judges_for_picker: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    role_catalogue: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RoleCatalogueOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_roles: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RoleOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_role: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RoleCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RoleOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_role: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_role: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RolePatch"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RoleOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_requests: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrgRequestOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_request: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OrgRequestCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrgRequestOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancel_request: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                request_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrgRequestOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_all_requests: {
+        parameters: {
+            query?: {
+                status?: string | null;
+            };
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrgRequestOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    execute_request: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                request_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OrgRequestDecision"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrgRequestOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    decline_request: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                request_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OrgRequestDecision"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrgRequestOut"];
                 };
             };
             /** @description Validation Error */
