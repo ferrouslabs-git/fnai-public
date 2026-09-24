@@ -25,6 +25,24 @@
   a draft straight to live, running the deploy gate (compile, readiness, gated
   evals) and freezing the version on the way. Golden path is create → version →
   playground → deploy → mint key → run.
+- **New: `client.use_space(name)` / `client.current_space`.** Scope every
+  later call to one space by name instead of whatever the token's default
+  space resolves to — validated against a fresh `me()` call every time, so
+  an unknown name raises `SpaceNotFoundError` rather than silently binding.
+  Opt-in and fully backward-compatible: skip it and nothing changes, no
+  `X-Space` header is ever sent.
+- **New: client-side input validation everywhere.** Every method that
+  creates or changes something (`functions.create`, `spaces.create`,
+  `datasets.create`/`add_row`, `eval.scores.create`, `eval.experiments.create`,
+  …) now validates required fields, ids, and — for `functions.create` /
+  `spaces.create` — slug/name uniqueness, raising `ValueError` before any
+  request goes out.
+- **`create_from_yaml`/`create_from_yaml_text` now skip a no-op re-import.**
+  Re-pushing the exact same document you last pulled (ignoring `meta`,
+  which is re-stamped fresh on every pull) returns the existing version
+  instead of minting a duplicate. A genuine edit still creates a new
+  version exactly as before — versions stay immutable history either way,
+  this only avoids wasting a version number on an unchanged file.
 
 ## 0.2.0 — 2026-08-19
 

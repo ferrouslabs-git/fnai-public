@@ -550,7 +550,13 @@ export interface paths {
         delete?: never;
         options?: never;
         head?: never;
-        patch?: never;
+        /**
+         * Patch Version
+         * @description REQ-275: change one field of a draft without resending the whole
+         *     snapshot — same draft-only guard, same validation, same compile step as
+         *     the full-overwrite PUT above; only the merge is new.
+         */
+        patch: operations["patch_version"];
         trace?: never;
     };
     "/api/versions/{v_id}/artifact": {
@@ -583,9 +589,10 @@ export interface paths {
         };
         /**
          * Function Types
-         * @description `fn types` — caller-side types (TS interface / Python TypedDict) for the
-         *     function's contract. Prefers the ACTIVE deployment's version (exactly what
-         *     /v1 validates against), else the latest version, else fn-level schemas.
+         * @description `fn types` — caller-side types (TS interface / Python TypedDict / Go
+         *     struct) for the function's contract. Prefers the ACTIVE deployment's
+         *     version (exactly what /v1 validates against), else the latest version,
+         *     else fn-level schemas.
          */
         get: operations["function_types"];
         put?: never;
@@ -970,10 +977,15 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List Tools */
+        /**
+         * List Tools
+         * @description REQ-361: the calling space's resolution set — every platform tool plus
+         *     anything this space has registered itself — not a single global list.
+         */
         get: operations["list_tools"];
         put?: never;
-        post?: never;
+        /** Create Tool */
+        post: operations["create_tool"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1211,7 +1223,17 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Run Gate */
+        /**
+         * Run Gate
+         * @description REQ-281/282/283: readiness is a structural fact, derived directly from
+         *     validate_definition()'s diagnostics — the SAME check the compile step and
+         *     save-time gate (REQ-267) already run — never a second, independent AI
+         *     guess at the same question. Zero model calls. Whether a function is any
+         *     GOOD is answered by real evaluation, never guessed upfront here (PRD 09
+         *     Decision #15). `run_plan`'s check-proposal already builds its own contract
+         *     from the compiled artifact for v2 documents (REQ-282) and does not depend
+         *     on this endpoint having run first.
+         */
         post: operations["run_gate"];
         delete?: never;
         options?: never;
@@ -1231,6 +1253,30 @@ export interface paths {
         put?: never;
         /** Run Plan */
         post: operations["run_plan"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/versions/{v_id}/plan/derive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Derive Plan
+         * @description REQ-384: propose a score set straight from the artifact's `rubric`
+         *     and `x-soft` fields — no LLM call, nothing retyped by hand. Always
+         *     creates a NEW plan (never overwrites an existing one) so re-deriving
+         *     after an edit is a fresh proposal to review, not a silent replacement
+         *     of whatever was already accepted.
+         */
+        post: operations["derive_plan"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1529,8 +1575,67 @@ export interface paths {
          * Rollback
          * @description Re-point to a prior version. Default target: the most recently deployed
          *     version different from the current one; or pass {version_id} explicitly.
+         *     REQ-187: a rollback is a deploy — with approvals on, it creates a pending
+         *     request like any other deploy, rather than happening instantly.
          */
         post: operations["rollback"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/functions/{fn_id}/deploy-requests": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Deploy Requests
+         * @description Visibility matches who can act on these: deployments.approve is
+         *     admin-tier only (ADMIN/SPACE_ADMIN_EXTRA), same population that can
+         *     deploy in the first place — a member/viewer never requests one, so
+         *     they never need to see the queue either.
+         */
+        get: operations["list_deploy_requests"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/deploy-requests/{request_id}/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Approve Deploy Request */
+        post: operations["approve_deploy_request"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/deploy-requests/{request_id}/reject": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Reject Deploy Request */
+        post: operations["reject_deploy_request"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1557,6 +1662,49 @@ export interface paths {
         options?: never;
         head?: never;
         patch?: never;
+        trace?: never;
+    };
+    "/api/invoke-keys/{key_id}/limits": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Set Key Limits
+         * @description REQ-183/185: set/clear a key's rate limit and quota — lives in the
+         *     control room next to the key it protects. Omit a field to leave it
+         *     unchanged; pass it as null to explicitly clear that limit (unlimited).
+         */
+        patch: operations["set_key_limits"];
+        trace?: never;
+    };
+    "/api/functions/{fn_id}/rate-ceiling": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Set Rate Ceiling
+         * @description REQ-183/185: the optional ceiling across ALL of a function's keys
+         *     combined. `{"rate_ceiling_per_min": null}` clears it (unlimited).
+         */
+        patch: operations["set_rate_ceiling"];
         trace?: never;
     };
     "/api/invoke-keys/{key_id}": {
@@ -1610,6 +1758,63 @@ export interface paths {
         put?: never;
         /** Run */
         post: operations["run"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/invocations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Invocations */
+        get: operations["list_invocations"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/functions/{fn_id}/invocation-metrics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Invocation Metrics
+         * @description REQ-189/192: the 'is my function okay, and who's causing it' rollup —
+         *     same shape as traces/api.py's function_health, but computed from
+         *     Invocation rows (real deployed traffic), not design-time Trace rows,
+         *     and additionally sliced by invoke key (REQ-192), not just version.
+         */
+        get: operations["invocation_metrics"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/invocations/{invocation_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Invocation */
+        get: operations["get_invocation"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -2489,6 +2694,158 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/tools/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Test Tool
+         * @description REQ-367: try a tool before saving it — same permission as
+         *     registration, since this makes a real call to whatever URL is given.
+         *     Nothing here touches the database; the response is returned once and
+         *     dropped.
+         */
+        post: operations["test_tool"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/tools/{tool_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Tool
+         * @description Same permission as create — a tool row's target/config can inform an
+         *     admin's decision to revoke or rotate; RLS is the tenancy check, this
+         *     endpoint just also gates it to the people who manage tools, not every
+         *     space member who can merely use one via GET /api/tools' summary form.
+         */
+        get: operations["get_tool"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Patch Tool
+         * @description REQ-362/370: edit a tool's contract (bumps version — an
+         *     already-compiled artifact is untouched) or move it through
+         *     active → deprecated → retired. A platform tool (account_id NULL) can't
+         *     be edited through this tenant-scoped endpoint — nobody outside platform
+         *     staff manages those, and that's not this ticket's surface.
+         */
+        patch: operations["patch_tool"];
+        trace?: never;
+    };
+    "/api/tools/{tool_id}/usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Tool Usage
+         * @description REQ-370: who's using this tool — deliberately readable before
+         *     retiring one, so "I think nobody uses it" never has to be a guess.
+         */
+        get: operations["get_tool_usage"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/functions/{fn_id}/knowledge": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Knowledge Files */
+        get: operations["list_knowledge_files"];
+        put?: never;
+        /** Upload Knowledge File */
+        post: operations["upload_knowledge_file"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/functions/{fn_id}/knowledge/{file_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Delete Knowledge File */
+        delete: operations["delete_knowledge_file"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/files": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Upload App File
+         * @description The app itself uploading a file for a playground/manual call.
+         */
+        post: operations["upload_app_file"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/files": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Upload V1 File
+         * @description An `fnk_` API caller uploading a file before invoking — same auth as
+         *     POST /v1/run, so a caller who can invoke the function can attach a file
+         *     to that call.
+         */
+        post: operations["upload_v1_file"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/health": {
         parameters: {
             query?: never;
@@ -2659,6 +3016,16 @@ export interface components {
              */
             breakdown: components["schemas"]["BillingBreakdownSlice"][];
         };
+        /** Body_upload_app_file */
+        Body_upload_app_file: {
+            /** File */
+            file: string;
+        };
+        /** Body_upload_knowledge_file */
+        Body_upload_knowledge_file: {
+            /** File */
+            file: string;
+        };
         /** Body_upload_rows */
         Body_upload_rows: {
             /** File */
@@ -2670,6 +3037,11 @@ export interface components {
              * @default {}
              */
             expected_mapping: string;
+        };
+        /** Body_upload_v1_file */
+        Body_upload_v1_file: {
+            /** File */
+            file: string;
         };
         /** CatalogueEntryOut */
         CatalogueEntryOut: {
@@ -2746,6 +3118,14 @@ export interface components {
             /** By Source */
             by_source: components["schemas"]["SourceSpend"][];
         };
+        /** CreateInvokeKeyIn */
+        CreateInvokeKeyIn: {
+            /**
+             * Name
+             * @default default
+             */
+            name: string;
+        };
         /** CreditTopupCreate */
         CreditTopupCreate: {
             /** Credits */
@@ -2807,6 +3187,54 @@ export interface components {
             scores_deleted: number;
             /** Scores Detached */
             scores_detached: number;
+        };
+        /** DeployIn */
+        DeployIn: {
+            /** Version Id */
+            version_id: number;
+            /**
+             * Note
+             * @default
+             */
+            note: string;
+            /**
+             * Confirm
+             * @default false
+             */
+            confirm: boolean;
+        };
+        /** DeployRequestDecisionIn */
+        DeployRequestDecisionIn: {
+            /** Note */
+            note?: string | null;
+        };
+        /** DeployRequestOut */
+        DeployRequestOut: {
+            /** Id */
+            id: number;
+            /** Function Id */
+            function_id: number;
+            /** Version Id */
+            version_id: number;
+            /** Version Number */
+            version_number?: number | null;
+            /** Action */
+            action: string;
+            /** Status */
+            status: string;
+            /** Note */
+            note?: string | null;
+            /** Requested By */
+            requested_by: string;
+            /**
+             * Requested At
+             * Format: date-time
+             */
+            requested_at: string;
+            /** Decided By */
+            decided_by?: string | null;
+            /** Decided At */
+            decided_at?: string | null;
         };
         /** DeploymentOut */
         DeploymentOut: {
@@ -3036,6 +3464,8 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+            /** Rate Ceiling Per Min */
+            rate_ceiling_per_min?: number | null;
         };
         /** FunctionPatch */
         FunctionPatch: {
@@ -3126,6 +3556,22 @@ export interface components {
             counts: {
                 [key: string]: number;
             };
+        };
+        /** InputFileOut */
+        InputFileOut: {
+            /** Handle */
+            handle: string;
+            /** Filename */
+            filename: string;
+            /** Content Type */
+            content_type: string;
+            /** Size Bytes */
+            size_bytes: number;
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
         };
         /** InvitationAcceptedOut */
         InvitationAcceptedOut: {
@@ -3235,6 +3681,161 @@ export interface components {
              */
             expires_at: string;
         };
+        /** InvocationDetailOut */
+        InvocationDetailOut: {
+            /** Id */
+            id: number;
+            /** Function Id */
+            function_id: number;
+            /** Version Id */
+            version_id: number;
+            /** Version Number */
+            version_number?: number | null;
+            /** Key Id */
+            key_id?: number | null;
+            /** Key Name */
+            key_name?: string | null;
+            /** Status */
+            status: string;
+            /** Error Detail */
+            error_detail?: string | null;
+            /** Reason */
+            reason?: string | null;
+            /** Latency Ms */
+            latency_ms: number;
+            /** Tokens In */
+            tokens_in: number;
+            /** Tokens Out */
+            tokens_out: number;
+            /** Steps */
+            steps: {
+                [key: string]: unknown;
+            }[];
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Input */
+            input: {
+                [key: string]: unknown;
+            };
+            /** Output */
+            output?: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Tool Credits
+             * @default 0
+             */
+            tool_credits: number;
+            /**
+             * Tool Credit Breakdown
+             * @default []
+             */
+            tool_credit_breakdown: {
+                [key: string]: unknown;
+            }[];
+        };
+        /** InvocationKeyRollup */
+        InvocationKeyRollup: {
+            /** Calls */
+            calls: number;
+            /** Errors */
+            errors: number;
+            /** Error Rate */
+            error_rate: number;
+            /** P50 Ms */
+            p50_ms: number;
+            /** P95 Ms */
+            p95_ms: number;
+            /** Tokens In */
+            tokens_in: number;
+            /** Tokens Out */
+            tokens_out: number;
+            /** Name */
+            name?: string | null;
+        };
+        /** InvocationMetricsOut */
+        InvocationMetricsOut: {
+            /** Calls */
+            calls: number;
+            /** Errors */
+            errors: number;
+            /** Error Rate */
+            error_rate: number;
+            /** P50 Ms */
+            p50_ms: number;
+            /** P95 Ms */
+            p95_ms: number;
+            /** Tokens In */
+            tokens_in: number;
+            /** Tokens Out */
+            tokens_out: number;
+            /** Window Hours */
+            window_hours: number;
+            /** By Version */
+            by_version: {
+                [key: string]: components["schemas"]["InvocationVersionRollup"];
+            };
+            /** By Key */
+            by_key: {
+                [key: string]: components["schemas"]["InvocationKeyRollup"];
+            };
+        };
+        /** InvocationSummaryOut */
+        InvocationSummaryOut: {
+            /** Id */
+            id: number;
+            /** Function Id */
+            function_id: number;
+            /** Version Id */
+            version_id: number;
+            /** Version Number */
+            version_number?: number | null;
+            /** Key Id */
+            key_id?: number | null;
+            /** Key Name */
+            key_name?: string | null;
+            /** Status */
+            status: string;
+            /** Error Detail */
+            error_detail?: string | null;
+            /** Reason */
+            reason?: string | null;
+            /** Latency Ms */
+            latency_ms: number;
+            /** Tokens In */
+            tokens_in: number;
+            /** Tokens Out */
+            tokens_out: number;
+            /** Steps */
+            steps: number;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+        };
+        /** InvocationVersionRollup */
+        InvocationVersionRollup: {
+            /** Calls */
+            calls: number;
+            /** Errors */
+            errors: number;
+            /** Error Rate */
+            error_rate: number;
+            /** P50 Ms */
+            p50_ms: number;
+            /** P95 Ms */
+            p95_ms: number;
+            /** Tokens In */
+            tokens_in: number;
+            /** Tokens Out */
+            tokens_out: number;
+            /** Number */
+            number?: number | null;
+        };
         /** InvoiceCreate */
         InvoiceCreate: {
             /**
@@ -3287,6 +3888,15 @@ export interface components {
              */
             created_at: string;
         };
+        /** InvokeKeyLimitsIn */
+        InvokeKeyLimitsIn: {
+            /** Rate Limit Per Min */
+            rate_limit_per_min?: number | null;
+            /** Quota Limit */
+            quota_limit?: number | null;
+            /** Quota Period Days */
+            quota_period_days?: number | null;
+        };
         /** InvokeKeyMintedOut */
         InvokeKeyMintedOut: {
             /** Id */
@@ -3308,6 +3918,15 @@ export interface components {
             created_at: string;
             /** Last Used At */
             last_used_at?: string | null;
+            /** Rate Limit Per Min */
+            rate_limit_per_min?: number | null;
+            /** Quota Limit */
+            quota_limit?: number | null;
+            /**
+             * Quota Period Days
+             * @default 1
+             */
+            quota_period_days: number;
             /** Key */
             key: string;
         };
@@ -3332,6 +3951,15 @@ export interface components {
             created_at: string;
             /** Last Used At */
             last_used_at?: string | null;
+            /** Rate Limit Per Min */
+            rate_limit_per_min?: number | null;
+            /** Quota Limit */
+            quota_limit?: number | null;
+            /**
+             * Quota Period Days
+             * @default 1
+             */
+            quota_period_days: number;
         };
         /** JudgeCreate */
         JudgeCreate: {
@@ -3426,6 +4054,26 @@ export interface components {
             detail: string;
             /** Latency Ms */
             latency_ms: number;
+        };
+        /** KnowledgeFileOut */
+        KnowledgeFileOut: {
+            /** Id */
+            id: number;
+            /** Function Id */
+            function_id: number;
+            /** Filename */
+            filename: string;
+            /** Content Type */
+            content_type: string;
+            /** Size Bytes */
+            size_bytes: number;
+            /** Created By */
+            created_by: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
         };
         /** LedgerEventOut */
         LedgerEventOut: {
@@ -3826,6 +4474,13 @@ export interface components {
             min_repeats: number;
             /** Created At */
             created_at?: string | null;
+            /**
+             * Derived
+             * @default false
+             */
+            derived: boolean;
+            /** Stale */
+            stale?: boolean | null;
         };
         /** PlanCreatedOut */
         PlanCreatedOut: {
@@ -3879,6 +4534,17 @@ export interface components {
             tokens_out?: number | null;
             /** Created At */
             created_at?: string | null;
+            /**
+             * Derived
+             * @default false
+             */
+            derived: boolean;
+            /** Stale */
+            stale?: boolean | null;
+            /** Derivation Skipped */
+            derivation_skipped?: {
+                [key: string]: unknown;
+            }[] | null;
         };
         /** PlanRateCreate */
         PlanRateCreate: {
@@ -4087,6 +4753,10 @@ export interface components {
             success: boolean;
             /** Error */
             error?: string | null;
+            /** Status */
+            status?: string | null;
+            /** Reason */
+            reason?: string | null;
             /** Trace */
             trace: {
                 [key: string]: unknown;
@@ -4150,6 +4820,11 @@ export interface components {
             /** Version */
             version: number;
         };
+        /** RateCeilingIn */
+        RateCeilingIn: {
+            /** Rate Ceiling Per Min */
+            rate_ceiling_per_min?: number | null;
+        };
         /** RemovePlanScoreOut */
         RemovePlanScoreOut: {
             /** Score Id */
@@ -4207,6 +4882,16 @@ export interface components {
             display_name?: string | null;
             /** Permissions */
             permissions?: string[] | null;
+        };
+        /** RollbackIn */
+        RollbackIn: {
+            /** Version Id */
+            version_id?: number | null;
+            /**
+             * Note
+             * @default
+             */
+            note: string;
         };
         /** RowIn */
         RowIn: {
@@ -4481,6 +5166,11 @@ export interface components {
             default_model?: string | null;
             /** Default Temperature */
             default_temperature?: number | null;
+            /**
+             * Deploy Approval Required
+             * @default false
+             */
+            deploy_approval_required: boolean;
         };
         /** SpaceRef */
         SpaceRef: {
@@ -4512,6 +5202,11 @@ export interface components {
             default_model?: string | null;
             /** Default Temperature */
             default_temperature?: number | null;
+            /**
+             * Deploy Approval Required
+             * @default false
+             */
+            deploy_approval_required: boolean;
         };
         /**
          * SpaceUpdate
@@ -4526,6 +5221,8 @@ export interface components {
             default_model?: string | null;
             /** Default Temperature */
             default_temperature?: number | null;
+            /** Deploy Approval Required */
+            deploy_approval_required?: boolean | null;
         };
         /** SubscriptionOut */
         SubscriptionOut: {
@@ -4590,12 +5287,224 @@ export interface components {
             /** Revoked At */
             revoked_at?: string | null;
         };
-        /** ToolInfoOut */
-        ToolInfoOut: {
+        /** ToolCreate */
+        ToolCreate: {
             /** Name */
             name: string;
             /** Description */
             description: string;
+            /**
+             * Effect
+             * @default side_effecting
+             */
+            effect: string;
+            /**
+             * Servicing
+             * @default sync
+             */
+            servicing: string;
+            /** Config Schema */
+            config_schema?: {
+                [key: string]: unknown;
+            } | null;
+            /** Target Type */
+            target_type: string;
+            /** Url */
+            url?: string | null;
+            /**
+             * Method
+             * @default POST
+             */
+            method: string;
+            /** Mcp Tool Name */
+            mcp_tool_name?: string | null;
+            /** Code */
+            code?: string | null;
+            /** Input Schema */
+            input_schema?: {
+                [key: string]: unknown;
+            } | null;
+            /** Openapi Spec */
+            openapi_spec?: {
+                [key: string]: unknown;
+            } | null;
+            /** Openapi Operation */
+            openapi_operation?: string | null;
+            /**
+             * Auth Kind
+             * @default static
+             */
+            auth_kind: string;
+            /** Credential */
+            credential?: {
+                [key: string]: unknown;
+            } | null;
+        };
+        /** ToolInfoOut */
+        ToolInfoOut: {
+            /** Id */
+            id?: number | null;
+            /** Name */
+            name: string;
+            /** Description */
+            description: string;
+            /** Effect */
+            effect?: string | null;
+            /** Status */
+            status?: string | null;
+            /** Owner */
+            owner?: string | null;
+            /** Target */
+            target?: {
+                [key: string]: unknown;
+            } | null;
+        };
+        /** ToolOut */
+        ToolOut: {
+            /** Id */
+            id: number;
+            /** Name */
+            name: string;
+            /** Version */
+            version: number;
+            /** Description */
+            description: string;
+            /** Input Schema */
+            input_schema: {
+                [key: string]: unknown;
+            };
+            /** Config Schema */
+            config_schema?: {
+                [key: string]: unknown;
+            } | null;
+            /** Effect */
+            effect: string;
+            /** Servicing */
+            servicing: string;
+            /** Replayable */
+            replayable: boolean;
+            /** Stateful */
+            stateful: boolean;
+            /** Target */
+            target: {
+                [key: string]: unknown;
+            };
+            /** Has Credential */
+            has_credential: boolean;
+            /** Status */
+            status: string;
+            /** Superseded By */
+            superseded_by?: string | null;
+            /** Owner */
+            owner: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+        };
+        /** ToolTestIn */
+        ToolTestIn: {
+            /** Target Type */
+            target_type: string;
+            /** Url */
+            url?: string | null;
+            /**
+             * Method
+             * @default POST
+             */
+            method: string;
+            /** Mcp Tool Name */
+            mcp_tool_name?: string | null;
+            /** Code */
+            code?: string | null;
+            /**
+             * Auth Kind
+             * @default static
+             */
+            auth_kind: string;
+            /** Credential */
+            credential?: {
+                [key: string]: unknown;
+            } | null;
+            /** Sample Args */
+            sample_args?: {
+                [key: string]: unknown;
+            };
+            /** Expected Output Schema */
+            expected_output_schema?: {
+                [key: string]: unknown;
+            } | null;
+        };
+        /** ToolTestOut */
+        ToolTestOut: {
+            /** Ok */
+            ok: boolean;
+            /** Response */
+            response?: unknown | null;
+            /** Error */
+            error?: string | null;
+            /** Error Kind */
+            error_kind?: string | null;
+            /** Latency Ms */
+            latency_ms: number;
+            /** Contract Match */
+            contract_match?: boolean | null;
+            /** Mismatch Detail */
+            mismatch_detail?: string | null;
+        };
+        /** ToolUpdate */
+        ToolUpdate: {
+            /** Description */
+            description?: string | null;
+            /** Input Schema */
+            input_schema?: {
+                [key: string]: unknown;
+            } | null;
+            /** Effect */
+            effect?: string | null;
+            /** Config Schema */
+            config_schema?: {
+                [key: string]: unknown;
+            } | null;
+            /** Status */
+            status?: string | null;
+            /** Superseded By */
+            superseded_by?: string | null;
+        };
+        /** ToolUsageOut */
+        ToolUsageOut: {
+            /** Tool Id */
+            tool_id: number;
+            /** Name */
+            name: string;
+            /** Versions */
+            versions: components["schemas"]["ToolUsageVersionOut"][];
+            /** Calls Last 30 Days */
+            calls_last_30_days: number;
+            /** Last Called At */
+            last_called_at?: string | null;
+        };
+        /** ToolUsageVersionOut */
+        ToolUsageVersionOut: {
+            /** Function Id */
+            function_id: number;
+            /** Function Name */
+            function_name: string;
+            /** Version Id */
+            version_id: number;
+            /** Version Number */
+            version_number: number;
+            /** Space Id */
+            space_id?: string | null;
+            /** Deployed */
+            deployed: boolean;
+            /** Deployed At */
+            deployed_at?: string | null;
+            /** Calls Last 30 Days */
+            calls_last_30_days: number;
+            /** Last Called At */
+            last_called_at?: string | null;
         };
         /** TraceDetailOut */
         TraceDetailOut: {
@@ -4617,6 +5526,14 @@ export interface components {
             success: boolean;
             /** Error */
             error?: string | null;
+            /** Status */
+            status?: string | null;
+            /** Reason */
+            reason?: string | null;
+            /** Execution Target */
+            execution_target?: string | null;
+            /** Execution Reason */
+            execution_reason?: string | null;
             /** Tokens In */
             tokens_in: number;
             /** Tokens Out */
@@ -4678,6 +5595,14 @@ export interface components {
             success: boolean;
             /** Error */
             error?: string | null;
+            /** Status */
+            status?: string | null;
+            /** Reason */
+            reason?: string | null;
+            /** Execution Target */
+            execution_target?: string | null;
+            /** Execution Reason */
+            execution_reason?: string | null;
             /** Tokens In */
             tokens_in: number;
             /** Tokens Out */
@@ -4815,10 +5740,32 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+            /** Created By */
+            created_by?: string | null;
+            /** Source */
+            source?: string | null;
             /** Approved By */
             approved_by: string | null;
             /** Approved At */
             approved_at: string | null;
+        };
+        /**
+         * VersionPatch
+         * @description REQ-275: change one field of a draft's snapshot without resending the
+         *     whole thing. `patch` follows JSON Merge Patch (RFC 7396) — a dict key
+         *     merges recursively, `null` deletes the key, anything else (including a
+         *     whole list) replaces wholesale. See functions/api.py::merge_patch.
+         */
+        VersionPatch: {
+            /** Patch */
+            patch: {
+                [key: string]: unknown;
+            };
+            /**
+             * Message
+             * @default
+             */
+            message: string;
         };
         /** VersionUpdate */
         VersionUpdate: {
@@ -5907,7 +6854,9 @@ export interface operations {
     };
     list_versions: {
         parameters: {
-            query?: never;
+            query?: {
+                created_by?: string | null;
+            };
             header?: {
                 authorization?: string | null;
                 "x-account"?: string | null;
@@ -6118,6 +7067,48 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["VersionUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VersionOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    patch_version: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                v_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VersionPatch"];
             };
         };
         responses: {
@@ -7315,6 +8306,46 @@ export interface operations {
             };
         };
     };
+    create_tool: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ToolCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ToolOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     playground_run: {
         parameters: {
             query?: never;
@@ -7938,6 +8969,44 @@ export interface operations {
             };
         };
     };
+    derive_plan: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                v_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlanOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     accept_plan: {
         parameters: {
             query?: never;
@@ -8521,19 +9590,17 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": {
-                    [key: string]: unknown;
-                };
+                "application/json": components["schemas"]["DeployIn"];
             };
         };
         responses: {
             /** @description Successful Response */
-            201: {
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["DeploymentOut"];
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */
@@ -8641,11 +9708,85 @@ export interface operations {
         };
         requestBody?: {
             content: {
-                "application/json": {
-                    [key: string]: unknown;
-                } | null;
+                "application/json": components["schemas"]["RollbackIn"];
             };
         };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_deploy_requests: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                fn_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeployRequestOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    approve_deploy_request: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                request_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
             201: {
@@ -8654,6 +9795,48 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DeploymentOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reject_deploy_request: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                request_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["DeployRequestDecisionIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeployRequestOut"];
                 };
             };
             /** @description Validation Error */
@@ -8723,9 +9906,7 @@ export interface operations {
         };
         requestBody?: {
             content: {
-                "application/json": {
-                    [key: string]: unknown;
-                } | null;
+                "application/json": components["schemas"]["CreateInvokeKeyIn"];
             };
         };
         responses: {
@@ -8736,6 +9917,90 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["InvokeKeyMintedOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_key_limits: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                key_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InvokeKeyLimitsIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvokeKeyOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_rate_ceiling: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                fn_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RateCeilingIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FunctionOut"];
                 };
             };
             /** @description Validation Error */
@@ -8844,6 +10109,129 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RunOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_invocations: {
+        parameters: {
+            query: {
+                function_id: number;
+                status?: string | null;
+                version_id?: number | null;
+                key_id?: number | null;
+                since?: string | null;
+                until?: string | null;
+                attention_only?: boolean;
+                limit?: number;
+            };
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvocationSummaryOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    invocation_metrics: {
+        parameters: {
+            query?: {
+                window_hours?: number;
+            };
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                fn_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvocationMetricsOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_invocation: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                invocation_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvocationDetailOut"];
                 };
             };
             /** @description Validation Error */
@@ -10847,6 +12235,356 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["OrgRequestOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    test_tool: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ToolTestIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ToolTestOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_tool: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                tool_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ToolOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    patch_tool: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                tool_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ToolUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ToolOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_tool_usage: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                tool_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ToolUsageOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_knowledge_files: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                fn_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KnowledgeFileOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    upload_knowledge_file: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                fn_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_upload_knowledge_file"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KnowledgeFileOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_knowledge_file: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                fn_id: number;
+                file_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    upload_app_file: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_upload_app_file"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InputFileOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    upload_v1_file: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_upload_v1_file"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InputFileOut"];
                 };
             };
             /** @description Validation Error */

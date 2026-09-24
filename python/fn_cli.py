@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """fn — the functionalAI command line (REQ-55).
 
-init / new / run / eval / deploy / pin / diff / rollback / ls / logs.
+init / new / run / eval / deploy / pin / diff / rollback / ls / logs / types.
 
 Chosen over the sibling Go implementation (sdk/go/cmd/fn) as the verified
 one: this repo's Python environment is real and testable here, so every
@@ -128,7 +128,8 @@ def cmd_new(args: argparse.Namespace) -> None:
     text = path.read_text(encoding="utf-8")
     c = get_client()
     fn, version = c.functions.create_from_yaml_text(text)
-    print(f"Created function {fn['slug']!r} (id {fn['id']}), version {version['number']}.")
+    print(f"Created function {fn['slug']!r} (id {fn['id']}), version {version['number']} "
+         f"(id {version['id']}) — use the id, not the number, with deploy/pin/diff/rollback.")
 
 
 def cmd_ls(args: argparse.Namespace) -> None:
@@ -169,18 +170,30 @@ def cmd_run(args: argparse.Namespace) -> None:
 def cmd_deploy(args: argparse.Namespace) -> None:
     c = get_client()
     dep = c.deployments.deploy(args.function_id, args.version_id)
-    print(f"Deployed. Live deployment id {dep['id']}.")
+    if dep.get("status") == "pending":
+        print(f"Pending approval (request id {dep['id']}) — this space requires a distinct "
+             "approver to confirm before it goes live.")
+    else:
+        print(f"Deployed. Live deployment id {dep['id']}.")
 
 
 def cmd_rollback(args: argparse.Namespace) -> None:
     c = get_client()
     dep = c.deployments.rollback(args.function_id, args.to_version)
-    print(f"Rolled back. Live deployment id {dep['id']}.")
+    if dep.get("status") == "pending":
+        print(f"Pending approval (request id {dep['id']}) — this space requires a distinct "
+             "approver to confirm before this rollback takes effect.")
+    else:
+        print(f"Rolled back. Live deployment id {dep['id']}.")
 
 
 def cmd_pin(args: argparse.Namespace) -> None:
     c = get_client()
     v = c.versions.get(args.version_id)
+    if v["function_id"] != args.function_id:
+        raise CliError(f"version {args.version_id} belongs to function {v['function_id']}, "
+                       f"not function {args.function_id} — check the id (fn ls / fn new prints "
+                       "the real version id, not its per-function number)")
     save_pin({"function_id": args.function_id, "version_id": args.version_id, "number": v["number"]})
     print(f"Pinned function {args.function_id} to version {args.version_id} "
          f"(v{v['number']}) in this folder.")
@@ -266,6 +279,17 @@ def _latest_snapshot_id(c: Client, fn_id: int) -> int:
     return snapshots[0]["id"]
 
 
+def cmd_types(args: argparse.Namespace) -> None:
+    c = get_client()
+    out = c.functions.types(args.function_id, lang=args.lang)
+    text = out["source"]
+    if args.out:
+        Path(args.out).write_text(text, encoding="utf-8")
+        print(f"Wrote {args.lang} types for {out.get('function', args.function_id)} to {args.out}")
+        return
+    sys.stdout.write(text if text.endswith("\n") else text + "\n")
+
+
 def cmd_logs(args: argparse.Namespace) -> None:
     c = get_client()
     traces = c.traces.list(function_id=args.function_id, source=args.source, limit=args.limit)
@@ -335,6 +359,13 @@ def build_parser() -> argparse.ArgumentParser:
     df.add_argument("version_id_a", type=int)
     df.add_argument("version_id_b", type=int)
     df.set_defaults(func=cmd_diff)
+
+    ty = sub.add_parser("types", help="generate caller-side types for a function's contract")
+    ty.add_argument("function_id", type=int)
+    ty.add_argument("--lang", default="typescript",
+                    help="typescript | python | go (default: typescript)")
+    ty.add_argument("-o", "--out", help="write to this file instead of stdout")
+    ty.set_defaults(func=cmd_types)
 
     lo = sub.add_parser("logs", help="recent production calls")
     lo.add_argument("function_id", type=int)

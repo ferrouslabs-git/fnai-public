@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 )
 
@@ -112,5 +113,113 @@ func TestRevokeNoContent(t *testing.T) {
 	_, c := stub(t)
 	if err := c.Auth.Tokens.Revoke("tid"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// ── input validation: required fields, ids, and duplicate names/slugs ──────
+
+func TestFunctionsCreateRejectsEmptySlug(t *testing.T) {
+	_, c := stub(t)
+	_, err := c.Functions.Create(FunctionCreate{
+		Slug: "", Name: "X", InputSchema: map[string]any{}, OutputSchema: map[string]any{}})
+	if _, ok := err.(*ValidationError); !ok {
+		t.Fatalf("expected *ValidationError, got %v", err)
+	}
+}
+
+func TestFunctionsGetRejectsNonPositiveID(t *testing.T) {
+	_, c := stub(t)
+	if _, err := c.Functions.Get(0); err == nil {
+		t.Fatal("expected an error for fnID=0")
+	}
+}
+
+func TestExperimentsCreateRejectsMissingVersionIDs(t *testing.T) {
+	_, c := stub(t)
+	if _, err := c.Eval.Experiments.Create(1, map[string]any{}); err == nil {
+		t.Fatal("expected an error for missing version_ids")
+	}
+}
+
+func TestDatasetsCreateRejectsRowMissingInput(t *testing.T) {
+	_, c := stub(t)
+	_, err := c.Datasets.Create(1, "ds", []map[string]any{{"no_input": 1}})
+	if err == nil {
+		t.Fatal("expected an error for a row missing 'input'")
+	}
+}
+
+// ── UseSpace: opt-in, validated, no header until explicitly set ────────────
+
+func spaceStub(t *testing.T, spaces []string) (*httptest.Server, *Client) {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/me", func(w http.ResponseWriter, r *http.Request) {
+		type sp struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		}
+		out := struct {
+			Spaces []sp `json:"spaces"`
+		}{}
+		for i, name := range spaces {
+			out.Spaces = append(out.Spaces, sp{ID: "s" + strconv.Itoa(i+1), Name: name})
+		}
+		json.NewEncoder(w).Encode(out)
+	})
+	mux.HandleFunc("GET /api/functions", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode([]FunctionOut{})
+	})
+	mux.HandleFunc("POST /api/spaces", func(w http.ResponseWriter, r *http.Request) {
+		var body struct{ Name string }
+		json.NewDecoder(r.Body).Decode(&body)
+		json.NewEncoder(w).Encode(SpaceCreated{ID: "s99", Name: body.Name})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv, NewClient("fnp_test", WithBaseURL(srv.URL))
+}
+
+func TestUseSpaceOptInNoHeaderByDefault(t *testing.T) {
+	_, c := spaceStub(t, []string{"Marketing"})
+	if c.CurrentSpace() != "" {
+		t.Fatalf("expected no space selected by default, got %q", c.CurrentSpace())
+	}
+	if _, err := c.Functions.List(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestUseSpaceRejectsUnknownName(t *testing.T) {
+	_, c := spaceStub(t, []string{"Marketing"})
+	err := c.UseSpace("Sales")
+	if _, ok := err.(*SpaceNotFoundError); !ok {
+		t.Fatalf("expected *SpaceNotFoundError, got %v", err)
+	}
+	if c.CurrentSpace() != "" {
+		t.Fatalf("a rejected UseSpace must not change CurrentSpace, got %q", c.CurrentSpace())
+	}
+}
+
+func TestUseSpaceAcceptsARealName(t *testing.T) {
+	_, c := spaceStub(t, []string{"Marketing"})
+	if err := c.UseSpace("Marketing"); err != nil {
+		t.Fatal(err)
+	}
+	if c.CurrentSpace() != "Marketing" {
+		t.Fatalf("expected CurrentSpace to be Marketing, got %q", c.CurrentSpace())
+	}
+}
+
+func TestSpacesCreateRejectsEmptyAndDuplicateNames(t *testing.T) {
+	_, c := spaceStub(t, []string{"Marketing"})
+	if _, err := c.Spaces.Create(""); err == nil {
+		t.Fatal("expected an error for an empty name")
+	}
+	if _, err := c.Spaces.Create("Marketing"); err == nil {
+		t.Fatal("expected an error for a name that already exists")
+	}
+	if _, err := c.Spaces.Create("Sales"); err != nil {
+		t.Fatalf("expected a genuinely new name to succeed, got %v", err)
 	}
 }

@@ -57,12 +57,53 @@ class FnaiError(Exception):
         super().__init__(f"HTTP {status}: {detail}")
 
 
+class SpaceNotFoundError(Exception):
+    """Raised by Client.use_space(name) when no space with that name exists
+    for this account. Checked fresh against GET /api/me every call — never
+    a cached guess — so a stale or mistyped name can never silently bind."""
+
+
 def _slugify(name: str) -> str:
     """A function's stable id, derived from its `name` — lower_snake_case,
     matching the platform's slug convention (create_from_yaml's only source
     of a slug, since a v2 document names a function by `name`, not `slug`)."""
     slug = re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
     return slug or "function"
+
+
+def _without_meta(doc: dict) -> dict:
+    """Same document, minus `meta` — the one block that's SUPPOSED to
+    differ between two pulls of the same unchanged content (the platform
+    re-stamps meta.version fresh every time — REQ-264). Used to tell a
+    genuine edit apart from a no-op re-import."""
+    return {k: v for k, v in doc.items() if k != "meta"}
+
+
+# ── shared input validation — every method below that takes a required
+# field, an id, or a body validates it with one of these BEFORE making a
+# request, so a caller gets a clear, immediate ValueError instead of a
+# confusing 404/422 (or, worse, a silently-wrong request) from the backend. ──
+
+def _require(value: Any, field: str) -> None:
+    """`value` must be present and non-blank — for required strings/dicts."""
+    if value is None or value == "" or (isinstance(value, str) and not value.strip()):
+        raise ValueError(f"{field} is required and cannot be empty.")
+
+
+def _require_dict(value: Any, field: str, *, allow_empty: bool = False) -> None:
+    if not isinstance(value, dict):
+        raise ValueError(f"{field} must be a dict, got {type(value).__name__}.")
+    if not allow_empty and not value:
+        raise ValueError(f"{field} cannot be empty.")
+
+
+def _require_id(value: Any, field: str) -> None:
+    """Every {fn,version,dataset,score,plan,experiment,key}_id argument goes
+    through this — an id is a positive int, never a bool (bool is a subclass
+    of int in Python, so `True`/`False` would otherwise sneak past an
+    `isinstance(x, int)` check), never a string someone forgot to convert."""
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{field} must be a positive integer id, got {value!r}.")
 
 
 class _Http:
@@ -72,6 +113,46 @@ class _Http:
         self._base = base_url.rstrip("/")
         self._token = token
         self._timeout = timeout
+        # Name-mangled (__space -> _Http__space), exposed only via the
+        # read-only `space` property below — Client.use_space() is the only
+        # way to change it, and it always validates first (see use_space()).
+        # Opt-in: a caller who never touches use_space() never sends an
+        # X-Space header at all, which is exactly today's behavior — the
+        # backend resolves its own default space, same as before this
+        # feature existed. Only a caller who explicitly targets a space
+        # gets that behavior.
+        self.__space: str | None = None
+
+    @property
+    def space(self) -> str | None:
+        """Read-only — see Client.current_space. There is deliberately no
+        setter; the only way to CHANGE it is use_space(), which validates
+        the name first."""
+        return self.__space
+
+    def use_space(self, name: str | None) -> None:
+        """Client.use_space()'s actual implementation. Validated against the
+        account's REAL spaces on every call (a fresh GET /api/me, not a
+        cached list a caller could have gone stale) — so this can never bind
+        to a space that doesn't exist or that this token can't see."""
+        if name is None:
+            self.__space = None
+            return
+        me = self("GET", "/api/me")
+        names = {sp["name"] for sp in me["spaces"]}
+        if name not in names:
+            raise SpaceNotFoundError(
+                f"no space named {name!r} for this account — "
+                f"choices: {sorted(names) or '(none yet — create one first)'}")
+        self.__space = name
+
+    def _headers(self, content_type: str) -> dict[str, str]:
+        headers = {"Authorization": f"Bearer {self._token}",
+                  "Content-Type": content_type,
+                  "User-Agent": f"fnai-python/{__version__}"}
+        if self.__space:
+            headers["X-Space"] = self.__space
+        return headers
 
     def __call__(self, method: str, path: str, body: dict | None = None,
                  query: dict | None = None) -> Any:
@@ -82,9 +163,7 @@ class _Http:
         req = urllib.request.Request(
             f"{self._base}{path}", method=method,
             data=json.dumps(body).encode() if body is not None else None,
-            headers={"Authorization": f"Bearer {self._token}",
-                     "Content-Type": "application/json",
-                     "User-Agent": f"fnai-python/{__version__}"})
+            headers=self._headers("application/json"))
         try:
             with urllib.request.urlopen(req, timeout=self._timeout) as resp:
                 raw = resp.read()
@@ -105,9 +184,7 @@ class _Http:
         __call__, just no (de)serialization either direction."""
         req = urllib.request.Request(
             f"{self._base}{path}", method=method, data=data,
-            headers={"Authorization": f"Bearer {self._token}",
-                     "Content-Type": content_type,
-                     "User-Agent": f"fnai-python/{__version__}"})
+            headers=self._headers(content_type))
         try:
             with urllib.request.urlopen(req, timeout=self._timeout) as resp:
                 return resp.read().decode("utf-8")
@@ -168,38 +245,59 @@ class _Functions:
         return self._h("GET", "/api/functions")
 
     def get(self, fn_id: int) -> dict:
+        _require_id(fn_id, "fn_id")
         return self._h("GET", f"/api/functions/{fn_id}")
 
     def create(self, *, slug: str, name: str, input_schema: dict,
                output_schema: dict, **extra: Any) -> dict:
+        _require(slug, "slug")
+        _require(name, "name")
+        _require_dict(input_schema, "input_schema", allow_empty=True)
+        _require_dict(output_schema, "output_schema", allow_empty=True)
+        existing = next((f for f in self.list() if f["slug"] == slug), None)
+        if existing is not None:
+            raise ValueError(f"a function with slug {slug!r} already exists "
+                             f"(id={existing['id']}) — pick a different slug, "
+                             f"or use that function's id instead of creating another.")
         return self._h("POST", "/api/functions",
                        {"slug": slug, "name": name, "input_schema": input_schema,
                         "output_schema": output_schema, **extra})
 
     def update(self, fn_id: int, **fields: Any) -> dict:
+        _require_id(fn_id, "fn_id")
+        if not fields:
+            raise ValueError("update() needs at least one field to change.")
         return self._h("PATCH", f"/api/functions/{fn_id}", fields)
 
     def archive(self, fn_id: int) -> None:
+        _require_id(fn_id, "fn_id")
         self._h("DELETE", f"/api/functions/{fn_id}")
 
     def versions(self, fn_id: int) -> list[dict]:
+        _require_id(fn_id, "fn_id")
         return self._h("GET", f"/api/functions/{fn_id}/versions")
 
     def create_version(self, fn_id: int, *, snapshot: dict, message: str = "",
                        input_schema: dict | None = None, output_schema: dict | None = None,
                        parent_id: int | None = None) -> dict:
+        _require_id(fn_id, "fn_id")
+        _require_dict(snapshot, "snapshot")
+        if parent_id is not None:
+            _require_id(parent_id, "parent_id")
         return self._h("POST", f"/api/functions/{fn_id}/versions",
                        {"snapshot": snapshot, "message": message,
                         "input_schema": input_schema, "output_schema": output_schema,
                         "parent_id": parent_id})
 
     def health(self, fn_id: int, window_hours: int = 24) -> dict:
+        _require_id(fn_id, "fn_id")
         return self._h("GET", f"/api/functions/{fn_id}/health",
                        query={"window_hours": window_hours})
 
     def types(self, fn_id: int, lang: str = "python") -> dict:
         """`fn types` — caller-side types for the function's deployed contract.
         Returns {language, function, version, source}; write `source` to a file."""
+        _require_id(fn_id, "fn_id")
         return self._h("GET", f"/api/functions/{fn_id}/types", query={"lang": lang})
 
     # ── v2 DSL: push/pull a function as one YAML document (REQ-44/272/273) ──
@@ -221,7 +319,17 @@ class _Functions:
 
     def create_from_yaml_text(self, text: str) -> tuple[dict, dict]:
         """Same as create_from_yaml(), for YAML already in memory (e.g. after
-        editing what get_yaml() returned) rather than freshly read from disk."""
+        editing what get_yaml() returned) rather than freshly read from disk.
+
+        A push always mints a new version on the backend — versions are
+        immutable history, never overwritten in place (REQ-268's stale-push
+        guard exists precisely because of that). What this method adds on
+        top: if the function already has a version and the document you're
+        pushing is IDENTICAL to it (ignoring `meta`, which the platform
+        re-stamps fresh on every pull — see get_yaml()), it returns that
+        existing version instead of minting a no-op duplicate. Re-importing
+        an unedited file is then a no-op; a genuine edit still creates a new
+        version exactly as before."""
         import yaml  # PyYAML — same optional dependency parse_prompt_file uses
         doc = yaml.safe_load(text)
         if not isinstance(doc, dict) or not doc.get("name"):
@@ -231,6 +339,14 @@ class _Functions:
         # per-space) function list rather than adding a new backend route
         # for this SDK convenience alone.
         existing = next((f for f in self.list() if f["slug"] == slug), None)
+        if existing is not None:
+            versions = self.versions(existing["id"])
+            if versions:
+                latest = max(versions, key=lambda v: v["number"])
+                current_text = self._h.text("GET", f"/api/versions/{latest['id']}/yaml")
+                current_doc = yaml.safe_load(current_text)
+                if _without_meta(doc) == _without_meta(current_doc):
+                    return existing, latest
         fn = existing or self._h("POST", "/api/functions", {"slug": slug, "name": doc["name"]})
         v = self._h.text("POST", f"/api/functions/{fn['id']}/versions/yaml",
                          data=text.encode("utf-8"), content_type="text/yaml")
@@ -253,25 +369,44 @@ class _Versions:
         self._h = http
 
     def get(self, v_id: int) -> dict:
+        _require_id(v_id, "v_id")
         return self._h("GET", f"/api/versions/{v_id}")
 
     def update(self, v_id: int, **fields: Any) -> dict:
+        _require_id(v_id, "v_id")
+        if not fields:
+            raise ValueError("update() needs at least one field to change.")
         return self._h("PUT", f"/api/versions/{v_id}", fields)
 
+    def patch(self, v_id: int, patch: dict, *, message: str = "") -> dict:
+        """REQ-275: change one field of a draft without resending the whole
+        snapshot. `patch` follows JSON Merge Patch (RFC 7396) — a dict key
+        merges recursively, `None` deletes the key, anything else (including
+        a whole list) replaces wholesale."""
+        _require_id(v_id, "v_id")
+        _require_dict(patch, "patch")
+        return self._h("PATCH", f"/api/versions/{v_id}", {"patch": patch, "message": message})
+
     def artifact(self, v_id: int) -> dict:
+        _require_id(v_id, "v_id")
         return self._h("GET", f"/api/versions/{v_id}/artifact")
 
     def playground(self, v_id: int, *, input: dict, model: str = "mock-small",
                    temperature: float | None = None) -> dict:
+        _require_id(v_id, "v_id")
+        _require_dict(input, "input", allow_empty=True)
+        _require(model, "model")
         body: dict[str, Any] = {"input": input, "model": model}
         if temperature is not None:
             body["temperature"] = temperature
         return self._h("POST", f"/api/versions/{v_id}/playground/run", body)
 
     def gate(self, v_id: int) -> dict:
+        _require_id(v_id, "v_id")
         return self._h("POST", f"/api/versions/{v_id}/gate", {})
 
     def plan(self, v_id: int) -> dict:
+        _require_id(v_id, "v_id")
         return self._h("GET", f"/api/versions/{v_id}/plan")
 
 
@@ -280,30 +415,45 @@ class _Plans:
         self._h = http
 
     def list(self, fn_id: int) -> list[dict]:
+        _require_id(fn_id, "fn_id")
         return self._h("GET", f"/api/functions/{fn_id}/plans")
 
     def create(self, fn_id: int, *, name: str) -> dict:
+        _require_id(fn_id, "fn_id")
+        _require(name, "name")
         return self._h("POST", f"/api/functions/{fn_id}/plans", {"name": name})
 
     def update(self, plan_id: int, **fields: Any) -> dict:
+        _require_id(plan_id, "plan_id")
+        if not fields:
+            raise ValueError("update() needs at least one field to change.")
         return self._h("PATCH", f"/api/plans/{plan_id}", fields)
 
     def accept(self, plan_id: int) -> dict:
+        _require_id(plan_id, "plan_id")
         return self._h("POST", f"/api/plans/{plan_id}/accept", {})
 
     def clone(self, plan_id: int, **body: Any) -> dict:
+        _require_id(plan_id, "plan_id")
         return self._h("POST", f"/api/plans/{plan_id}/clone", body)
 
     def delete(self, plan_id: int) -> None:
+        _require_id(plan_id, "plan_id")
         self._h("DELETE", f"/api/plans/{plan_id}")
 
     def scores(self, plan_id: int) -> list[dict]:
+        _require_id(plan_id, "plan_id")
         return self._h("GET", f"/api/plans/{plan_id}/scores")
 
     def add_score(self, plan_id: int, **body: Any) -> dict:
+        _require_id(plan_id, "plan_id")
+        if not body:
+            raise ValueError("add_score() needs at least the score fields to add.")
         return self._h("POST", f"/api/plans/{plan_id}/scores", body)
 
     def remove_score(self, plan_id: int, score_id: int) -> None:
+        _require_id(plan_id, "plan_id")
+        _require_id(score_id, "score_id")
         self._h("DELETE", f"/api/plans/{plan_id}/scores/{score_id}")
 
     def catalogue(self) -> list[dict]:
@@ -315,27 +465,43 @@ class _Experiments:
         self._h = http
 
     def list(self, fn_id: int) -> list[dict]:
+        _require_id(fn_id, "fn_id")
         return self._h("GET", f"/api/functions/{fn_id}/experiments")
 
     def get(self, exp_id: int) -> dict:
+        _require_id(exp_id, "exp_id")
         return self._h("GET", f"/api/experiments/{exp_id}")
 
     def create(self, fn_id: int, **pins: Any) -> dict:
+        _require_id(fn_id, "fn_id")
+        # ExperimentCreate (backend/app/schemas.py) requires version_ids — a
+        # plan_id-only or single_input-only pin still needs SOME version to
+        # run against, so this is the one field worth enforcing here rather
+        # than letting an empty pins dict reach the backend as a 422.
+        if not pins.get("version_ids"):
+            raise ValueError("create() needs version_ids=[...] — at least one version to run.")
         return self._h("POST", f"/api/functions/{fn_id}/experiments", pins)
 
     def update(self, exp_id: int, **fields: Any) -> dict:
+        _require_id(exp_id, "exp_id")
+        if not fields:
+            raise ValueError("update() needs at least one field to change.")
         return self._h("PATCH", f"/api/experiments/{exp_id}", fields)
 
     def run(self, exp_id: int) -> dict:
+        _require_id(exp_id, "exp_id")
         return self._h("POST", f"/api/experiments/{exp_id}/run", {})
 
     def clone(self, exp_id: int) -> dict:
+        _require_id(exp_id, "exp_id")
         return self._h("POST", f"/api/experiments/{exp_id}/clone", {})
 
     def delete(self, exp_id: int) -> None:
+        _require_id(exp_id, "exp_id")
         self._h("DELETE", f"/api/experiments/{exp_id}")
 
     def findings(self, exp_id: int) -> list[dict]:
+        _require_id(exp_id, "exp_id")
         return self._h("GET", f"/api/experiments/{exp_id}/findings")
 
 
@@ -344,15 +510,26 @@ class _Scores:
         self._h = http
 
     def list(self, fn_id: int) -> list[dict]:
+        _require_id(fn_id, "fn_id")
         return self._h("GET", f"/api/functions/{fn_id}/scores")
 
     def create(self, fn_id: int, **body: Any) -> dict:
+        _require_id(fn_id, "fn_id")
+        # ScoreCreate (backend/app/schemas.py): name and config are both
+        # required with no default — tier defaults to "det" server-side, so
+        # it's the only one of the four left genuinely optional here.
+        _require(body.get("name"), "name")
+        _require_dict(body.get("config"), "config", allow_empty=True)
         return self._h("POST", f"/api/functions/{fn_id}/scores", body)
 
     def results(self, fn_id: int, **filters: Any) -> list[dict]:
+        _require_id(fn_id, "fn_id")
         return self._h("GET", f"/api/functions/{fn_id}/score-results", query=filters)
 
     def set_gate(self, score_id: int, gate: bool) -> dict:
+        _require_id(score_id, "score_id")
+        if not isinstance(gate, bool):
+            raise ValueError(f"gate must be a bool, got {type(gate).__name__}.")
         return self._h("POST", f"/api/scores/{score_id}/gate", {"gate": gate})
 
 
@@ -370,6 +547,17 @@ class _Spaces:
         self._h = http
 
     def create(self, *, name: str) -> dict:
+        """Validates `name` and that no space with this name already exists
+        for the account (the same exact-name match get_scope's X-Space
+        lookup uses — see backend/app/auth_usermanagement/security/scope.py),
+        so a typo'd "create" that was meant to be a "switch" fails loudly
+        here instead of quietly leaving two same-named spaces."""
+        _require(name, "name")
+        me = self._h("GET", "/api/me")
+        existing = next((sp for sp in me["spaces"] if sp["name"] == name), None)
+        if existing is not None:
+            raise ValueError(f"a space named {name!r} already exists (id={existing['id']}) — "
+                             f"use Client.use_space({name!r}) to switch to it instead of creating another.")
         return self._h("POST", "/api/spaces", {"name": name})
 
 
@@ -378,29 +566,50 @@ class _Datasets:
         self._h = http
 
     def list(self, fn_id: int, include_archived: bool = False) -> list[dict]:
+        _require_id(fn_id, "fn_id")
         q = {"include_archived": "true"} if include_archived else None
         return self._h("GET", f"/api/functions/{fn_id}/datasets", query=q)
 
     def create(self, fn_id: int, *, name: str, rows: list[dict] | None = None) -> dict:
+        _require_id(fn_id, "fn_id")
+        _require(name, "name")
+        if rows is not None:
+            if not isinstance(rows, list) or not all(isinstance(r, dict) for r in rows):
+                raise ValueError("rows must be a list of dicts.")
+            for i, r in enumerate(rows):
+                if "input" not in r:
+                    raise ValueError(f"rows[{i}] is missing required key 'input'.")
         return self._h("POST", f"/api/functions/{fn_id}/datasets",
                        {"name": name, "rows": rows or []})
 
     def update(self, ds_id: int, **fields: Any) -> dict:
+        _require_id(ds_id, "ds_id")
+        if not fields:
+            raise ValueError("update() needs at least one field to change.")
         return self._h("PATCH", f"/api/datasets/{ds_id}", fields)
 
     def delete(self, ds_id: int) -> None:
+        _require_id(ds_id, "ds_id")
         self._h("DELETE", f"/api/datasets/{ds_id}")
 
     def rows(self, ds_id: int) -> list[dict]:
+        _require_id(ds_id, "ds_id")
         return self._h("GET", f"/api/datasets/{ds_id}/rows")
 
     def add_row(self, ds_id: int, **row: Any) -> dict:
+        _require_id(ds_id, "ds_id")
+        # RowIn (backend/app/schemas.py): input is required with no default;
+        # expected/tags/source all have defaults, so only this one is worth
+        # enforcing before a request goes out.
+        _require_dict(row.get("input"), "input", allow_empty=True)
         return self._h("POST", f"/api/datasets/{ds_id}/rows", row)
 
     def snapshot(self, ds_id: int) -> dict:
+        _require_id(ds_id, "ds_id")
         return self._h("POST", f"/api/datasets/{ds_id}/snapshot", {})
 
     def snapshots(self, ds_id: int) -> list[dict]:
+        _require_id(ds_id, "ds_id")
         return self._h("GET", f"/api/datasets/{ds_id}/snapshots")
 
 
@@ -409,16 +618,23 @@ class _Deployments:
         self._h = http
 
     def deploy(self, fn_id: int, version_id: int) -> dict:
+        _require_id(fn_id, "fn_id")
+        _require_id(version_id, "version_id")
         return self._h("POST", f"/api/functions/{fn_id}/deploy",
                        {"version_id": version_id})
 
     def current(self, fn_id: int) -> dict:
+        _require_id(fn_id, "fn_id")
         return self._h("GET", f"/api/functions/{fn_id}/deployment")
 
     def history(self, fn_id: int) -> list[dict]:
+        _require_id(fn_id, "fn_id")
         return self._h("GET", f"/api/functions/{fn_id}/deployments")
 
     def rollback(self, fn_id: int, version_id: int | None = None) -> dict:
+        _require_id(fn_id, "fn_id")
+        if version_id is not None:
+            _require_id(version_id, "version_id")
         body = {"version_id": version_id} if version_id is not None else {}
         return self._h("POST", f"/api/functions/{fn_id}/rollback", body)
 
@@ -435,19 +651,28 @@ class _ProviderKeys:
     def add(self, *, provider: str, secret: dict, label: str = "", **extra: Any) -> dict:
         """Provider keys are organization-level. Restrict one to selected spaces
         with update(key_id, shared_space_ids=[...]); None means every space."""
+        _require(provider, "provider")
+        _require_dict(secret, "secret")
         return self._h("POST", "/api/provider-keys",
                        {"provider": provider, "secret": secret, "label": label, **extra})
 
     def update(self, key_id: int, **fields: Any) -> dict:
+        _require_id(key_id, "key_id")
+        if not fields:
+            raise ValueError("update() needs at least one field to change.")
         return self._h("PATCH", f"/api/provider-keys/{key_id}", fields)
 
     def test(self, key_id: int) -> dict:
+        _require_id(key_id, "key_id")
         return self._h("POST", f"/api/provider-keys/{key_id}/test", {})
 
     def rotate(self, key_id: int, secret: dict) -> dict:
+        _require_id(key_id, "key_id")
+        _require_dict(secret, "secret")
         return self._h("POST", f"/api/provider-keys/{key_id}/rotate", {"secret": secret})
 
     def delete(self, key_id: int) -> None:
+        _require_id(key_id, "key_id")
         self._h("DELETE", f"/api/provider-keys/{key_id}")
 
 
@@ -458,12 +683,15 @@ class _InvokeKeys:
         self._h = http
 
     def list(self, fn_id: int) -> list[dict]:
+        _require_id(fn_id, "fn_id")
         return self._h("GET", f"/api/functions/{fn_id}/invoke-keys")
 
     def mint(self, fn_id: int, name: str = "") -> dict:
+        _require_id(fn_id, "fn_id")
         return self._h("POST", f"/api/functions/{fn_id}/invoke-keys", {"name": name})
 
     def revoke(self, key_id: int) -> None:
+        _require_id(key_id, "key_id")
         self._h("DELETE", f"/api/invoke-keys/{key_id}")
 
 
@@ -481,14 +709,18 @@ class _Traces:
 
     def list(self, function_id: int | None = None, source: str | None = None,
              limit: int = 50) -> list[dict]:
+        if function_id is not None:
+            _require_id(function_id, "function_id")
         return self._h("GET", "/api/traces",
                        query={"function_id": function_id, "source": source, "limit": limit})
 
     def get(self, trace_id: str) -> dict:
+        _require(trace_id, "trace_id")
         return self._h("GET", f"/api/traces/{trace_id}")
 
     def flag(self, trace_id: str) -> dict:
         """The flywheel: production trace → regression dataset row."""
+        _require(trace_id, "trace_id")
         return self._h("POST", f"/api/traces/{trace_id}/flag", {})
 
 
@@ -501,9 +733,11 @@ class _AuthTokens:
 
     def mint(self, name: str) -> dict:
         """Plaintext token is in THIS response only."""
+        _require(name, "name")
         return self._h("POST", "/api/auth/tokens", {"name": name})
 
     def revoke(self, token_id: str) -> None:
+        _require(token_id, "token_id")
         self._h("DELETE", f"/api/auth/tokens/{token_id}")
 
 
@@ -531,6 +765,30 @@ class Client:
 
     def me(self) -> dict:
         return self._http("GET", "/api/me")
+
+    def use_space(self, name: str | None) -> None:
+        """Scope every later call to one space by name (the `X-Space` header
+        get_scope reads — see
+        backend/app/auth_usermanagement/security/scope.py), instead of
+        whatever this token's default space resolves to. `name` is a
+        space's `name` from me()["spaces"], not its id.
+
+        Opt-in: if you never call this, nothing changes — no X-Space header
+        is ever sent, same as before this method existed, and the backend
+        resolves its own default space exactly as it always has. Use this
+        only when an account has more than one space and you need to target
+        a specific one.
+
+        Delegates to _Http.use_space(), which re-validates `name` against a
+        FRESH GET /api/me every time — raising SpaceNotFoundError rather
+        than accepting a name nobody checked. None clears the override."""
+        self._http.use_space(name)
+
+    @property
+    def current_space(self) -> str | None:
+        """The space name Client.use_space() last set, or None if nothing
+        has been selected (the default state — see use_space())."""
+        return self._http.space
 
     def raw(self, method: str, path: str, body: dict | None = None,
            query: dict | None = None) -> Any:

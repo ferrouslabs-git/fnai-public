@@ -44,12 +44,97 @@ export class FnaiError extends Error {
   }
 }
 
+/** Raised by Client.useSpace(name) when no space with that name exists for
+ *  this account. Checked fresh against GET /api/me every call — never a
+ *  cached guess — so a stale or mistyped name can never silently bind. */
+export class SpaceNotFoundError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SpaceNotFoundError";
+  }
+}
+
 type Json = Record<string, unknown>;
 
+// ── shared input validation — every method below that takes a required
+// field, an id, or a body validates it with one of these BEFORE making a
+// request, so a caller gets a clear, immediate error instead of a confusing
+// 404/422 (or, worse, a silently-wrong request) from the backend. ──────────
+
+function requireField(value: unknown, field: string): void {
+  if (value === undefined || value === null || value === "" ||
+      (typeof value === "string" && !value.trim())) {
+    throw new Error(`${field} is required and cannot be empty.`);
+  }
+}
+
+function isPlainRecord(v: unknown): v is Json {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+function requireRecord(value: unknown, field: string, opts: { allowEmpty?: boolean } = {}): void {
+  if (!isPlainRecord(value)) {
+    throw new Error(`${field} must be an object, got ${value === null ? "null" : typeof value}.`);
+  }
+  if (!opts.allowEmpty && Object.keys(value).length === 0) {
+    throw new Error(`${field} cannot be empty.`);
+  }
+}
+
+/** Every {fn,version,dataset,score,plan,experiment,key}Id argument goes
+ *  through this — an id is a positive integer, never a string someone
+ *  forgot to convert. */
+function requireId(value: unknown, field: string): void {
+  if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
+    throw new Error(`${field} must be a positive integer id, got ${JSON.stringify(value)}.`);
+  }
+}
+
 class Http {
+  // Private field (# — real JS/TS privacy, not just a naming convention):
+  // useSpace() is the ONLY way to change it, and it always validates the
+  // name first. Opt-in: a caller who never touches useSpace() never sends
+  // an X-Space header at all — exactly today's behavior — and the backend
+  // resolves its own default space, same as before this feature existed.
+  #space: string | null = null;
+
   constructor(private base: string, private token: string,
               private timeoutMs: number) {
     this.base = base.replace(/\/+$/, "");
+  }
+
+  get space(): string | null {
+    return this.#space;
+  }
+
+  /** Client.useSpace()'s actual implementation. Validated against the
+   *  account's REAL spaces on every call (a fresh GET /api/me, not a cached
+   *  list a caller could have gone stale) — so this can never bind to a
+   *  space that doesn't exist or that this token can't see. */
+  async useSpace(name: string | null): Promise<void> {
+    if (name === null) {
+      this.#space = null;
+      return;
+    }
+    const me = await this.request<{ spaces: { id: string; name: string }[] }>("GET", "/api/me");
+    const names = new Set(me.spaces.map((sp) => sp.name));
+    if (!names.has(name)) {
+      const choices = [...names].sort();
+      throw new SpaceNotFoundError(
+        `no space named ${JSON.stringify(name)} for this account — ` +
+        `choices: ${choices.length ? JSON.stringify(choices) : "(none yet — create one first)"}`);
+    }
+    this.#space = name;
+  }
+
+  private headers(contentType: string): Record<string, string> {
+    const h: Record<string, string> = {
+      Authorization: `Bearer ${this.token}`,
+      "Content-Type": contentType,
+      "User-Agent": `fnai-ts/${VERSION}`,
+    };
+    if (this.#space) h["X-Space"] = this.#space;
+    return h;
   }
 
   async request<T>(method: string, path: string, body?: Json,
@@ -67,11 +152,7 @@ class Http {
     try {
       resp = await fetch(url, {
         method,
-        headers: {
-          Authorization: `Bearer ${this.token}`,
-          "Content-Type": "application/json",
-          "User-Agent": `fnai-ts/${VERSION}`,
-        },
+        headers: this.headers("application/json"),
         body: body !== undefined ? JSON.stringify(body) : undefined,
         signal: AbortSignal.timeout(this.timeoutMs),
       });
@@ -99,11 +180,7 @@ class Http {
     try {
       resp = await fetch(this.base + path, {
         method,
-        headers: {
-          Authorization: `Bearer ${this.token}`,
-          "Content-Type": contentType,
-          "User-Agent": `fnai-ts/${VERSION}`,
-        },
+        headers: this.headers(contentType),
         body,
         signal: AbortSignal.timeout(this.timeoutMs),
       });
@@ -183,37 +260,61 @@ class Functions {
   }
 
   get(fnId: number): Promise<S["FunctionOut"]> {
+    requireId(fnId, "fnId");
     return this.h.request("GET", `/api/functions/${fnId}`);
   }
 
-  create(body: S["FunctionCreate"]): Promise<S["FunctionOut"]> {
-    return this.h.request("POST", "/api/functions", body as unknown as Json);
+  async create(body: S["FunctionCreate"]): Promise<S["FunctionOut"]> {
+    const b = body as unknown as Json;
+    requireField(b.slug, "slug");
+    requireField(b.name, "name");
+    requireRecord(b.input_schema, "input_schema", { allowEmpty: true });
+    requireRecord(b.output_schema, "output_schema", { allowEmpty: true });
+    const existing = (await this.list()).find((f) => f.slug === b.slug);
+    if (existing) {
+      throw new Error(`a function with slug ${JSON.stringify(b.slug)} already exists ` +
+        `(id=${existing.id}) — pick a different slug, or use that function's id ` +
+        `instead of creating another.`);
+    }
+    return this.h.request("POST", "/api/functions", b);
   }
 
   update(fnId: number, fields: S["FunctionPatch"]): Promise<S["FunctionOut"]> {
+    requireId(fnId, "fnId");
+    if (Object.keys(fields as unknown as Json).length === 0) {
+      throw new Error("update() needs at least one field to change.");
+    }
     return this.h.request("PATCH", `/api/functions/${fnId}`, fields as unknown as Json);
   }
 
   archive(fnId: number): Promise<void> {
+    requireId(fnId, "fnId");
     return this.h.request("DELETE", `/api/functions/${fnId}`);
   }
 
   versions(fnId: number): Promise<S["VersionOut"][]> {
+    requireId(fnId, "fnId");
     return this.h.request("GET", `/api/functions/${fnId}/versions`);
   }
 
   createVersion(fnId: number, body: S["VersionCreate"]): Promise<S["VersionOut"]> {
-    return this.h.request("POST", `/api/functions/${fnId}/versions`, body as unknown as Json);
+    requireId(fnId, "fnId");
+    const b = body as unknown as Json;
+    requireRecord(b.snapshot, "snapshot");
+    if (b.parent_id !== undefined && b.parent_id !== null) requireId(b.parent_id, "parent_id");
+    return this.h.request("POST", `/api/functions/${fnId}/versions`, b);
   }
 
   health(fnId: number, windowHours = 24): Promise<S["HealthOut"]> {
+    requireId(fnId, "fnId");
     return this.h.request("GET", `/api/functions/${fnId}/health`,
                           undefined, { window_hours: windowHours });
   }
 
   /** `fn types` — caller-side types for the function's deployed contract. */
-  types(fnId: number, lang: "typescript" | "python" = "typescript"):
+  types(fnId: number, lang: "typescript" | "python" | "go" = "typescript"):
       Promise<S["TypesOut"]> {
+    requireId(fnId, "fnId");
     return this.h.request("GET", `/api/functions/${fnId}/types`,
                           undefined, { lang });
   }
@@ -237,7 +338,17 @@ class Functions {
   }
 
   /** Same as createFromYaml(), for YAML already in memory (e.g. after
-   *  editing what getYaml() returned) rather than freshly read from disk. */
+   *  editing what getYaml() returned) rather than freshly read from disk.
+   *
+   *  A push always mints a new version on the backend — versions are
+   *  immutable history, never overwritten in place (REQ-268's stale-push
+   *  guard exists precisely because of that). What this method adds on
+   *  top: if the function already has a version and the document you're
+   *  pushing is IDENTICAL to it (ignoring `meta`, which the platform
+   *  re-stamps fresh on every pull — see getYaml()), it returns that
+   *  existing version instead of minting a no-op duplicate. Re-importing
+   *  an unedited file is then a no-op; a genuine edit still creates a new
+   *  version exactly as before. */
   async createFromYamlText(text: string): Promise<CreatedFunction> {
     let yaml: { load: (s: string) => unknown };
     try {
@@ -262,8 +373,23 @@ class Functions {
     // per-space) function list rather than adding a new backend route for
     // this SDK convenience alone.
     const existing = (await this.list()).find((f) => f.slug === slug);
-    const fn = existing ?? await this.create(
-      { slug, name: doc.name } as unknown as S["FunctionCreate"]);
+    if (existing) {
+      const versions = await this.versions(existing.id);
+      if (versions.length) {
+        const latest = versions.reduce((a, b) => (b.number > a.number ? b : a));
+        const currentText = await this.h.requestText("GET", `/api/versions/${latest.id}/yaml`);
+        const currentDoc = yaml.load(currentText);
+        if (isPlainObject(currentDoc) &&
+            canonicalJson(withoutMeta(doc)) === canonicalJson(withoutMeta(currentDoc))) {
+          return { fn: existing, version: latest };
+        }
+      }
+    }
+    // Bypasses create()'s validation deliberately (same as the Python
+    // client) — the YAML/JSON body is the real definition; input/output
+    // schema come from IT, not from a second, redundant object here.
+    const fn = existing ?? await this.h.request<S["FunctionOut"]>(
+      "POST", "/api/functions", { slug, name: doc.name });
     const raw = await this.h.requestText(
       "POST", `/api/functions/${fn.id}/versions/yaml`, text, "text/yaml");
     return { fn, version: JSON.parse(raw) as S["VersionOut"] };
@@ -286,33 +412,75 @@ function slugify(name: string): string {
   return slug || "function";
 }
 
+/** Same document, minus `meta` — the one block that's SUPPOSED to differ
+ *  between two pulls of the same unchanged content (the platform re-stamps
+ *  meta.version fresh every time — REQ-264). Used to tell a genuine edit
+ *  apart from a no-op re-import. */
+function withoutMeta(doc: Record<string, unknown>): Record<string, unknown> {
+  const { meta: _meta, ...rest } = doc;
+  return rest;
+}
+
+/** JSON.stringify with every object's keys sorted, recursively — so two
+ *  documents that are the same content but different key order (a
+ *  hand-edited file vs. the platform's regenerated one) compare equal. */
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (isPlainObject(value)) {
+    const keys = Object.keys(value).sort();
+    return `{${keys.map((k) => `${JSON.stringify(k)}:${canonicalJson(value[k])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
 class Versions {
   constructor(private h: Http) {}
 
   get(vId: number): Promise<S["VersionOut"]> {
+    requireId(vId, "vId");
     return this.h.request("GET", `/api/versions/${vId}`);
   }
 
   update(vId: number, fields: S["VersionUpdate"]): Promise<S["VersionOut"]> {
+    requireId(vId, "vId");
+    if (Object.keys(fields as unknown as Json).length === 0) {
+      throw new Error("update() needs at least one field to change.");
+    }
     return this.h.request("PUT", `/api/versions/${vId}`, fields as unknown as Json);
   }
 
+  /** REQ-275: change one field of a draft without resending the whole
+   *  snapshot. `patch` follows JSON Merge Patch (RFC 7396) — a key merges
+   *  recursively, `null` deletes it, anything else (including a whole list)
+   *  replaces wholesale. */
+  patch(vId: number, patch: Json, message = ""): Promise<S["VersionOut"]> {
+    requireId(vId, "vId");
+    requireRecord(patch, "patch");
+    return this.h.request("PATCH", `/api/versions/${vId}`, { patch, message } as unknown as Json);
+  }
+
   artifact(vId: number): Promise<Json> {
+    requireId(vId, "vId");
     return this.h.request("GET", `/api/versions/${vId}/artifact`);
   }
 
   playground(vId: number, opts: { input: Json; model?: string; temperature?: number }):
       Promise<S["PlaygroundOut"]> {
+    requireId(vId, "vId");
+    requireRecord(opts.input, "input", { allowEmpty: true });
+    requireField(opts.model ?? "mock-small", "model");
     const body: Json = { input: opts.input, model: opts.model ?? "mock-small" };
     if (opts.temperature !== undefined) body.temperature = opts.temperature;
     return this.h.request("POST", `/api/versions/${vId}/playground/run`, body);
   }
 
   gate(vId: number): Promise<S["PlanOut"]> {
+    requireId(vId, "vId");
     return this.h.request("POST", `/api/versions/${vId}/gate`, {});
   }
 
   plan(vId: number): Promise<S["PlanOut"]> {
+    requireId(vId, "vId");
     return this.h.request("GET", `/api/versions/${vId}/plan`);
   }
 }
@@ -321,38 +489,55 @@ class Plans {
   constructor(private h: Http) {}
 
   list(fnId: number): Promise<S["PlanBriefOut"][]> {
+    requireId(fnId, "fnId");
     return this.h.request("GET", `/api/functions/${fnId}/plans`);
   }
 
   create(fnId: number, opts: { name: string }): Promise<S["PlanCreatedOut"]> {
+    requireId(fnId, "fnId");
+    requireField(opts.name, "name");
     return this.h.request("POST", `/api/functions/${fnId}/plans`, { name: opts.name });
   }
 
   update(planId: number, fields: Json): Promise<S["PlanCreatedOut"]> {
+    requireId(planId, "planId");
+    if (Object.keys(fields).length === 0) {
+      throw new Error("update() needs at least one field to change.");
+    }
     return this.h.request("PATCH", `/api/plans/${planId}`, fields);
   }
 
   accept(planId: number, body: Json = {}): Promise<S["AcceptPlanOut"]> {
+    requireId(planId, "planId");
     return this.h.request("POST", `/api/plans/${planId}/accept`, body);
   }
 
   clone(planId: number, body: Json = {}): Promise<S["PlanCreatedOut"]> {
+    requireId(planId, "planId");
     return this.h.request("POST", `/api/plans/${planId}/clone`, body);
   }
 
   delete(planId: number): Promise<S["DeletePlanOut"]> {
+    requireId(planId, "planId");
     return this.h.request("DELETE", `/api/plans/${planId}`);
   }
 
   scores(planId: number): Promise<S["ScoreOut"][]> {
+    requireId(planId, "planId");
     return this.h.request("GET", `/api/plans/${planId}/scores`);
   }
 
   addScore(planId: number, body: Json): Promise<S["ScoreOut"]> {
+    requireId(planId, "planId");
+    if (Object.keys(body).length === 0) {
+      throw new Error("addScore() needs at least the score fields to add.");
+    }
     return this.h.request("POST", `/api/plans/${planId}/scores`, body);
   }
 
   removeScore(planId: number, scoreId: number): Promise<S["RemovePlanScoreOut"]> {
+    requireId(planId, "planId");
+    requireId(scoreId, "scoreId");
     return this.h.request("DELETE", `/api/plans/${planId}/scores/${scoreId}`);
   }
 
@@ -365,34 +550,53 @@ class Experiments {
   constructor(private h: Http) {}
 
   list(fnId: number): Promise<S["ExperimentOut"][]> {
+    requireId(fnId, "fnId");
     return this.h.request("GET", `/api/functions/${fnId}/experiments`);
   }
 
   get(expId: number): Promise<S["ExperimentOut"]> {
+    requireId(expId, "expId");
     return this.h.request("GET", `/api/experiments/${expId}`);
   }
 
   create(fnId: number, pins: S["ExperimentCreate"]): Promise<S["ExperimentOut"]> {
-    return this.h.request("POST", `/api/functions/${fnId}/experiments`, pins as unknown as Json);
+    requireId(fnId, "fnId");
+    const p = pins as unknown as Json;
+    // ExperimentCreate (backend/app/schemas.py) requires version_ids — a
+    // planId-only or singleInput-only pin still needs SOME version to run
+    // against, so this is the one field worth enforcing here rather than
+    // letting an empty pins object reach the backend as a 422.
+    if (!Array.isArray(p.version_ids) || p.version_ids.length === 0) {
+      throw new Error("create() needs version_ids: [...] — at least one version to run.");
+    }
+    return this.h.request("POST", `/api/functions/${fnId}/experiments`, p);
   }
 
   update(expId: number, fields: S["ExperimentPatch"]): Promise<S["ExperimentOut"]> {
+    requireId(expId, "expId");
+    if (Object.keys(fields as unknown as Json).length === 0) {
+      throw new Error("update() needs at least one field to change.");
+    }
     return this.h.request("PATCH", `/api/experiments/${expId}`, fields as unknown as Json);
   }
 
   run(expId: number): Promise<S["ExperimentOut"]> {
+    requireId(expId, "expId");
     return this.h.request("POST", `/api/experiments/${expId}/run`, {});
   }
 
   clone(expId: number): Promise<S["ExperimentOut"]> {
+    requireId(expId, "expId");
     return this.h.request("POST", `/api/experiments/${expId}/clone`, {});
   }
 
   delete(expId: number): Promise<void> {
+    requireId(expId, "expId");
     return this.h.request("DELETE", `/api/experiments/${expId}`);
   }
 
   findings(expId: number): Promise<S["FindingOut"][]> {
+    requireId(expId, "expId");
     return this.h.request("GET", `/api/experiments/${expId}/findings`);
   }
 }
@@ -401,19 +605,31 @@ class Scores {
   constructor(private h: Http) {}
 
   list(fnId: number): Promise<S["ScoreOut"][]> {
+    requireId(fnId, "fnId");
     return this.h.request("GET", `/api/functions/${fnId}/scores`);
   }
 
   create(fnId: number, body: S["ScoreCreate"]): Promise<S["ScoreOut"]> {
-    return this.h.request("POST", `/api/functions/${fnId}/scores`, body as unknown as Json);
+    requireId(fnId, "fnId");
+    const b = body as unknown as Json;
+    // ScoreCreate: name and config are both required with no default — tier
+    // defaults to "det" server-side, so it's the only one left optional here.
+    requireField(b.name, "name");
+    requireRecord(b.config, "config", { allowEmpty: true });
+    return this.h.request("POST", `/api/functions/${fnId}/scores`, b);
   }
 
   results(fnId: number, filters: Record<string, string | number | undefined> = {}):
       Promise<S["ScoreResultOut"][]> {
+    requireId(fnId, "fnId");
     return this.h.request("GET", `/api/functions/${fnId}/score-results`, undefined, filters);
   }
 
   setGate(scoreId: number, gate: boolean): Promise<S["ScoreOut"]> {
+    requireId(scoreId, "scoreId");
+    if (typeof gate !== "boolean") {
+      throw new Error(`gate must be a boolean, got ${typeof gate}.`);
+    }
     return this.h.request("POST", `/api/scores/${scoreId}/gate`, { gate });
   }
 }
@@ -435,36 +651,60 @@ class Datasets {
   constructor(private h: Http) {}
 
   list(fnId: number, includeArchived = false): Promise<S["DatasetOut"][]> {
+    requireId(fnId, "fnId");
     return this.h.request("GET", `/api/functions/${fnId}/datasets`, undefined,
                           includeArchived ? { include_archived: "true" } : undefined);
   }
 
   create(fnId: number, opts: { name: string; rows?: Json[] }): Promise<S["DatasetOut"]> {
+    requireId(fnId, "fnId");
+    requireField(opts.name, "name");
+    if (opts.rows !== undefined) {
+      if (!Array.isArray(opts.rows) || !opts.rows.every(isPlainRecord)) {
+        throw new Error("rows must be an array of objects.");
+      }
+      opts.rows.forEach((r, i) => {
+        if (!("input" in r)) throw new Error(`rows[${i}] is missing required key 'input'.`);
+      });
+    }
     return this.h.request("POST", `/api/functions/${fnId}/datasets`,
                           { name: opts.name, rows: opts.rows ?? [] });
   }
 
   update(dsId: number, fields: S["DatasetPatch"]): Promise<S["DatasetOut"]> {
+    requireId(dsId, "dsId");
+    if (Object.keys(fields as unknown as Json).length === 0) {
+      throw new Error("update() needs at least one field to change.");
+    }
     return this.h.request("PATCH", `/api/datasets/${dsId}`, fields as unknown as Json);
   }
 
   delete(dsId: number): Promise<void> {
+    requireId(dsId, "dsId");
     return this.h.request("DELETE", `/api/datasets/${dsId}`);
   }
 
   rows(dsId: number): Promise<S["RowOut"][]> {
+    requireId(dsId, "dsId");
     return this.h.request("GET", `/api/datasets/${dsId}/rows`);
   }
 
   addRow(dsId: number, row: S["RowIn"]): Promise<S["RowOut"]> {
+    requireId(dsId, "dsId");
+    // RowIn (backend/app/schemas.py): input is required with no default;
+    // expected/tags/source all have defaults, so only this one is worth
+    // enforcing before a request goes out.
+    requireRecord((row as unknown as Json).input, "input", { allowEmpty: true });
     return this.h.request("POST", `/api/datasets/${dsId}/rows`, row as unknown as Json);
   }
 
   snapshot(dsId: number): Promise<S["SnapshotOut"]> {
+    requireId(dsId, "dsId");
     return this.h.request("POST", `/api/datasets/${dsId}/snapshot`, {});
   }
 
   snapshots(dsId: number): Promise<S["SnapshotHistoryOut"][]> {
+    requireId(dsId, "dsId");
     return this.h.request("GET", `/api/datasets/${dsId}/snapshots`);
   }
 }
@@ -473,21 +713,48 @@ class Deployments {
   constructor(private h: Http) {}
 
   deploy(fnId: number, versionId: number): Promise<S["DeploymentOut"]> {
+    requireId(fnId, "fnId");
+    requireId(versionId, "versionId");
     return this.h.request("POST", `/api/functions/${fnId}/deploy`,
                           { version_id: versionId });
   }
 
   current(fnId: number): Promise<S["DeploymentOut"]> {
+    requireId(fnId, "fnId");
     return this.h.request("GET", `/api/functions/${fnId}/deployment`);
   }
 
   history(fnId: number): Promise<S["DeploymentOut"][]> {
+    requireId(fnId, "fnId");
     return this.h.request("GET", `/api/functions/${fnId}/deployments`);
   }
 
   rollback(fnId: number, versionId?: number): Promise<S["DeploymentOut"]> {
+    requireId(fnId, "fnId");
+    if (versionId !== undefined) requireId(versionId, "versionId");
     return this.h.request("POST", `/api/functions/${fnId}/rollback`,
                           versionId !== undefined ? { version_id: versionId } : {});
+  }
+}
+
+/** Space management. `create()` validates against a fresh GET /api/me every
+ *  call — the same exact-name match get_scope's X-Space lookup uses (see
+ *  backend/app/auth_usermanagement/security/scope.py) — so a typo'd
+ *  "create" that was meant to be a "switch" fails loudly instead of quietly
+ *  leaving two same-named spaces. */
+class Spaces {
+  constructor(private h: Http) {}
+
+  async create(opts: { name: string }): Promise<{ id: string; name: string }> {
+    requireField(opts.name, "name");
+    const me = await this.h.request<{ spaces: { id: string; name: string }[] }>("GET", "/api/me");
+    const existing = me.spaces.find((sp) => sp.name === opts.name);
+    if (existing) {
+      throw new Error(`a space named ${JSON.stringify(opts.name)} already exists ` +
+        `(id=${existing.id}) — use Client.useSpace(${JSON.stringify(opts.name)}) ` +
+        `to switch to it instead of creating another.`);
+    }
+    return this.h.request("POST", "/api/spaces", { name: opts.name });
   }
 }
 
@@ -500,22 +767,33 @@ class ProviderKeys {
   }
 
   add(body: S["KeyCreate"]): Promise<S["KeyOut"]> {
-    return this.h.request("POST", "/api/provider-keys", body as unknown as Json);
+    const b = body as unknown as Json;
+    requireField(b.provider, "provider");
+    requireRecord(b.secret, "secret");
+    return this.h.request("POST", "/api/provider-keys", b);
   }
 
   update(keyId: number, fields: S["KeyPatch"]): Promise<S["KeyOut"]> {
+    requireId(keyId, "keyId");
+    if (Object.keys(fields as unknown as Json).length === 0) {
+      throw new Error("update() needs at least one field to change.");
+    }
     return this.h.request("PATCH", `/api/provider-keys/${keyId}`, fields as unknown as Json);
   }
 
   test(keyId: number): Promise<S["KeyTestOut"]> {
+    requireId(keyId, "keyId");
     return this.h.request("POST", `/api/provider-keys/${keyId}/test`, {});
   }
 
   rotate(keyId: number, secret: Json): Promise<S["KeyOut"]> {
+    requireId(keyId, "keyId");
+    requireRecord(secret, "secret");
     return this.h.request("POST", `/api/provider-keys/${keyId}/rotate`, { secret });
   }
 
   delete(keyId: number): Promise<void> {
+    requireId(keyId, "keyId");
     return this.h.request("DELETE", `/api/provider-keys/${keyId}`);
   }
 }
@@ -525,14 +803,17 @@ class InvokeKeys {
   constructor(private h: Http) {}
 
   list(fnId: number): Promise<S["InvokeKeyOut"][]> {
+    requireId(fnId, "fnId");
     return this.h.request("GET", `/api/functions/${fnId}/invoke-keys`);
   }
 
   mint(fnId: number, name = ""): Promise<S["InvokeKeyMintedOut"]> {
+    requireId(fnId, "fnId");
     return this.h.request("POST", `/api/functions/${fnId}/invoke-keys`, { name });
   }
 
   revoke(keyId: number): Promise<void> {
+    requireId(keyId, "keyId");
     return this.h.request("DELETE", `/api/invoke-keys/${keyId}`);
   }
 }
@@ -552,17 +833,20 @@ class Traces {
 
   list(opts: { functionId?: number; source?: string; limit?: number } = {}):
       Promise<S["TraceSummaryOut"][]> {
+    if (opts.functionId !== undefined) requireId(opts.functionId, "functionId");
     return this.h.request("GET", "/api/traces", undefined, {
       function_id: opts.functionId, source: opts.source, limit: opts.limit ?? 50,
     });
   }
 
   get(traceId: string): Promise<S["TraceDetailOut"]> {
+    requireField(traceId, "traceId");
     return this.h.request("GET", `/api/traces/${traceId}`);
   }
 
   /** The flywheel: production trace → regression dataset row. */
   flag(traceId: string): Promise<S["TraceFlagOut"]> {
+    requireField(traceId, "traceId");
     return this.h.request("POST", `/api/traces/${traceId}/flag`, {});
   }
 }
@@ -576,10 +860,12 @@ class AuthTokens {
 
   /** Plaintext token is in THIS response only. */
   mint(name: string): Promise<S["TokenMintedOut"]> {
+    requireField(name, "name");
     return this.h.request("POST", "/api/auth/tokens", { name });
   }
 
   revoke(tokenId: string): Promise<void> {
+    requireField(tokenId, "tokenId");
     return this.h.request("DELETE", `/api/auth/tokens/${tokenId}`);
   }
 }
@@ -605,6 +891,7 @@ export class Client {
   private timeoutMs: number;
 
   functions: Functions;
+  spaces: Spaces;
   versions: Versions;
   eval: Eval;
   datasets: Datasets;
@@ -618,6 +905,7 @@ export class Client {
     this.timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.http = new Http(this.baseUrl, opts.token, this.timeoutMs);
     this.functions = new Functions(this.http);
+    this.spaces = new Spaces(this.http);
     this.versions = new Versions(this.http);
     this.eval = new Eval(this.http);
     this.datasets = new Datasets(this.http);
@@ -629,6 +917,29 @@ export class Client {
 
   me(): Promise<S["MeOut"]> {
     return this.http.request("GET", "/api/me");
+  }
+
+  /** Scope every later space-scoped call to one space by name (the
+   *  `X-Space` header get_scope reads — see
+   *  backend/app/auth_usermanagement/security/scope.py), instead of
+   *  whatever this token's default space resolves to. `name` is a space's
+   *  `name` from me().spaces, not its id.
+   *
+   *  Opt-in: if you never call this, nothing changes — no X-Space header is
+   *  ever sent, same as before this method existed, and the backend
+   *  resolves its own default space exactly as it always has.
+   *
+   *  Re-validates `name` against a FRESH GET /api/me every call — raising
+   *  SpaceNotFoundError rather than accepting a name nobody checked. Pass
+   *  null to clear the override. */
+  useSpace(name: string | null): Promise<void> {
+    return this.http.useSpace(name);
+  }
+
+  /** The space name useSpace() last set, or null if nothing has been
+   *  selected (the default state — see useSpace()). */
+  get currentSpace(): string | null {
+    return this.http.space;
   }
 
   /** Cross over to the runtime surface: a Function handle on this base URL. */

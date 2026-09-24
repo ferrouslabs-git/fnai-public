@@ -73,10 +73,41 @@ c.eval.experiments.run(exp["id"])
 print(c.functions.health(fn["id"]))                          # observe
 ```
 
-Namespaces: `functions` · `versions` · `eval.plans` / `eval.experiments` /
-`eval.scores` · `datasets` · `deployments` · `keys.provider` / `keys.invoke` ·
-`traces` · `auth.tokens`. Full walkthrough:
+Namespaces: `functions` · `spaces` · `versions` · `eval.plans` /
+`eval.experiments` / `eval.scores` · `datasets` · `deployments` ·
+`keys.provider` / `keys.invoke` · `traces` · `auth.tokens`. Full walkthrough:
 [`examples/management.py`](examples/management.py).
+
+### Working with more than one space
+
+Every call above runs against whichever space this token's account
+defaults to — fine as long as the account only has one. If it has several,
+pick one explicitly:
+
+```python
+me = c.me()
+print([sp["name"] for sp in me["spaces"]])   # what you can choose from
+
+c.use_space("Marketing")          # validated against the account's real
+                                   # spaces every call — raises
+                                   # SpaceNotFoundError on a bad name
+print(c.current_space)            # "Marketing"
+
+c.functions.create(...)           # now created in "Marketing", not the default
+c.use_space(None)                 # back to the account's default
+```
+
+`use_space()` is opt-in: skip it entirely and nothing changes — no
+`X-Space` header is ever sent, same as before this existed.
+
+### Input validation
+
+Every method that creates or changes something validates its required
+fields, ids, and (for `functions.create`/`spaces.create`) name/slug
+uniqueness client-side, raising a plain `ValueError` before any request
+goes out — e.g. `c.spaces.create(name="")` or a slug that already exists
+in the current space fails immediately with a message naming exactly
+what's wrong, rather than a generic 422 from the server.
 
 ## API surface (runtime)
 

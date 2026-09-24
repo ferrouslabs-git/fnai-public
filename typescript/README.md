@@ -62,10 +62,41 @@ await c.eval.experiments.run(exp.id);
 console.log(await c.functions.health(fn.id));
 ```
 
-Namespaces: `functions` · `versions` · `eval.plans` / `eval.experiments` /
-`eval.scores` · `datasets` · `deployments` · `keys.provider` / `keys.invoke` ·
-`traces` · `auth.tokens`. Full walkthrough:
+Namespaces: `functions` · `spaces` · `versions` · `eval.plans` /
+`eval.experiments` / `eval.scores` · `datasets` · `deployments` ·
+`keys.provider` / `keys.invoke` · `traces` · `auth.tokens`. Full walkthrough:
 [`examples/golden-path.mjs`](examples/golden-path.mjs).
+
+### Working with more than one space
+
+Every call above runs against whichever space this token's account
+defaults to — fine as long as the account only has one. If it has several,
+pick one explicitly:
+
+```ts
+const me = await c.me();
+console.log(me.spaces.map((sp) => sp.name));   // what you can choose from
+
+await c.useSpace("Marketing");     // validated against the account's real
+                                    // spaces every call — throws
+                                    // SpaceNotFoundError on a bad name
+console.log(c.currentSpace);       // "Marketing"
+
+await c.functions.create(...);     // now created in "Marketing", not the default
+await c.useSpace(null);            // back to the account's default
+```
+
+`useSpace()` is opt-in: skip it entirely and nothing changes — no
+`X-Space` header is ever sent, same as before this existed.
+
+### Input validation
+
+Every method that creates or changes something validates its required
+fields, ids, and (for `functions.create`/`spaces.create`) name/slug
+uniqueness client-side, throwing a plain `Error` before any request goes
+out — e.g. `c.spaces.create({ name: "" })` or a slug that already exists
+in the current space fails immediately with a message naming exactly
+what's wrong, rather than a generic 422 from the server.
 
 ## License
 

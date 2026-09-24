@@ -1,0 +1,63 @@
+meta:
+  function: summarize_uploaded_contract
+  version: 3
+  dsl_version: 2
+
+name: Summarize Uploaded Contract
+description: Fetches a page, reads an uploaded PDF, and summarizes both.
+
+input:
+  url:        { type: string, required: true, format: url }
+  page_text:  { type: string, derived: true }
+  contract:   { type: file, media: document, formats: [pdf, docx], required: true }
+  tier:       { type: string, enum: [free, pro, enterprise] }
+  tags:       { type: array, items: { type: string }, min_items: 0, max_items: 5 }
+
+output:
+  summary:
+    type: string
+    required: true
+    length: { unit: tokens, target: 60, range: [40, 80] }
+  urgency:
+    type: integer
+    required: true
+    minimum: 1
+    maximum: 5
+
+implementation:
+  execution:
+    mode: agent
+  preprocessors:
+    - { tool: web_fetch, from: url, into: page_text }
+  flow:
+    - "Read the fetched page and the uploaded contract."
+    - "Summarize both in one paragraph."
+  sections:
+    role: You are a contracts triage assistant.
+    definitions:
+      - "Urgency: how quickly a human must respond, 1 (low) to 5 (critical)."
+    constraints:
+      - "Never invent facts not present in the ticket or tool output."
+    edge_cases:
+      - "If the contract can't be read, say so plainly."
+    examples:
+      - polarity: positive
+        input: { url: "https://example.com/x" }
+        output: { summary: "A short summary.", urgency: 2 }
+      - polarity: negative
+        output: { summary: "idk", urgency: 3 }
+        note: "Too vague to be usable."
+  tools:
+    - name: knowledge_files
+      config: { mode: read }
+      max_calls: 12
+
+rubric:
+  - "The summary names the concrete symptom, not a vague restatement."
+
+memory:
+  per: caller
+  remember: ["the customer's plan, environment, and past defects"]
+  never: ["card numbers", "passwords"]
+
+needs: [tool_calling, long_context]

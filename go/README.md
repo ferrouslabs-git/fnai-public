@@ -39,10 +39,41 @@ result, _ := c.Function(fn.Slug, key.Key).Run(map[string]any{"document": "…"})
 health, _ := c.Functions.Health(fn.ID, 24)
 ```
 
-Namespaces: `Functions` · `Versions` · `Eval.Plans` / `Eval.Experiments` /
-`Eval.Scores` · `Datasets` · `Deployments` · `Keys.Provider` / `Keys.Invoke` ·
-`Traces` · `Auth.Tokens`. Full walkthrough:
+Namespaces: `Functions` · `Spaces` · `Versions` · `Eval.Plans` /
+`Eval.Experiments` / `Eval.Scores` · `Datasets` · `Deployments` ·
+`Keys.Provider` / `Keys.Invoke` · `Traces` · `Auth.Tokens`. Full walkthrough:
 [`examples/goldenpath/main.go`](examples/goldenpath/main.go).
+
+### Working with more than one space
+
+Every call above runs against whichever space this token's account
+defaults to — fine as long as the account only has one. If it has several,
+pick one explicitly:
+
+```go
+me, _ := c.Me()
+fmt.Println(me["spaces"])          // what you can choose from
+
+err := c.UseSpace("Marketing")     // validated against the account's real
+                                    // spaces every call — returns
+                                    // *fnai.SpaceNotFoundError on a bad name
+fmt.Println(c.CurrentSpace())      // "Marketing"
+
+c.Functions.Create(...)            // now created in "Marketing", not the default
+c.UseSpace("")                     // back to the account's default
+```
+
+`UseSpace` is opt-in: skip it entirely and nothing changes — no `X-Space`
+header is ever sent, same as before this existed.
+
+### Input validation
+
+Every method that creates or changes something validates its required
+fields, ids, and (for `Functions.Create`/`Spaces.Create`) name/slug
+uniqueness client-side, returning a `*fnai.ValidationError` before any
+request goes out — e.g. `c.Spaces.Create("")` or a slug that already
+exists in the current space fails immediately with a message naming
+exactly what's wrong, rather than a generic 422 from the server.
 
 Design note: struct types cover the golden-path surface and are maintained by
 hand (the TypeScript client's types are generated from OpenAPI; Go generators

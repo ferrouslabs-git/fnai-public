@@ -26,6 +26,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -48,10 +49,102 @@ func (e *Error) Error() string {
 	return fmt.Sprintf("HTTP %d: %s", e.Status, e.Detail)
 }
 
+// ValidationError is returned by every management method when its input
+// fails validation client-side — a missing/empty required field, a bad id,
+// a duplicate name/slug — before any network call is made. The difference
+// from *Error (an API-level failure) is that a ValidationError never
+// reaches the network at all.
+type ValidationError struct{ msg string }
+
+func (e *ValidationError) Error() string { return e.msg }
+
+func validationErrorf(format string, a ...any) error {
+	return &ValidationError{msg: fmt.Sprintf(format, a...)}
+}
+
+// SpaceNotFoundError is returned by Client.UseSpace when no space with that
+// name exists for this account. Checked fresh against GET /api/me every
+// call — never a cached guess — so a stale or mistyped name can never
+// silently bind.
+type SpaceNotFoundError struct{ msg string }
+
+func (e *SpaceNotFoundError) Error() string { return e.msg }
+
+// requireField validates a required string field is present and non-blank.
+func requireField(value, field string) error {
+	if strings.TrimSpace(value) == "" {
+		return validationErrorf("%s is required and cannot be empty.", field)
+	}
+	return nil
+}
+
+// requireMap validates a required map[string]any field. nil is never
+// accepted (Go's zero value for an omitted map — that's "wasn't given",
+// not "empty"); an empty-but-non-nil map is accepted when allowEmpty is
+// true.
+func requireMap(value map[string]any, field string, allowEmpty bool) error {
+	if value == nil {
+		return validationErrorf("%s is required and cannot be nil.", field)
+	}
+	if !allowEmpty && len(value) == 0 {
+		return validationErrorf("%s cannot be empty.", field)
+	}
+	return nil
+}
+
+// requireID validates every {fn,version,dataset,score,plan,experiment,key}ID
+// argument — an id is a positive integer.
+func requireID(value int, field string) error {
+	if value <= 0 {
+		return validationErrorf("%s must be a positive integer id, got %d.", field, value)
+	}
+	return nil
+}
+
 type httpClient struct {
 	base  string
 	token string
 	hc    *http.Client
+	// space is set via Client.UseSpace(), which always validates the name
+	// first — nothing else in this package writes it. Empty means "use the
+	// account's default space", exactly today's behavior before this field
+	// existed: opt-in, additive, never sent unless explicitly chosen.
+	space string
+}
+
+// useSpace is Client.UseSpace()'s actual implementation. Validated against
+// the account's REAL spaces on every call (a fresh GET /api/me, not a
+// cached list that could have gone stale) — so this can never bind to a
+// space that doesn't exist or that this token can't see.
+func (h *httpClient) useSpace(name string) error {
+	if name == "" {
+		h.space = ""
+		return nil
+	}
+	var me struct {
+		Spaces []struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"spaces"`
+	}
+	if err := h.do("GET", "/api/me", nil, nil, &me); err != nil {
+		return err
+	}
+	names := make([]string, 0, len(me.Spaces))
+	for _, sp := range me.Spaces {
+		names = append(names, sp.Name)
+		if sp.Name == name {
+			h.space = name
+			return nil
+		}
+	}
+	sort.Strings(names)
+	choices := "(none yet — create one first)"
+	if len(names) > 0 {
+		choices = strings.Join(names, ", ")
+	}
+	return &SpaceNotFoundError{msg: fmt.Sprintf(
+		"no space named %q for this account — choices: %s", name, choices)}
 }
 
 func (h *httpClient) do(method, path string, body any, query url.Values, out any) error {
@@ -76,6 +169,9 @@ func (h *httpClient) do(method, path string, body any, query url.Values, out any
 	req.Header.Set("Authorization", "Bearer "+h.token)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "fnai-go/"+Version)
+	if h.space != "" {
+		req.Header.Set("X-Space", h.space)
+	}
 	resp, err := h.hc.Do(req)
 	if err != nil {
 		return &Error{Status: 0, Detail: "cannot reach " + h.base + ": " + err.Error()}
@@ -313,40 +409,84 @@ func (s *FunctionsService) List() ([]FunctionOut, error) {
 }
 
 func (s *FunctionsService) Get(fnID int) (*FunctionOut, error) {
+	if err := requireID(fnID, "fnID"); err != nil {
+		return nil, err
+	}
 	var out FunctionOut
 	return &out, s.h.do("GET", "/api/functions/"+strconv.Itoa(fnID), nil, nil, &out)
 }
 
 func (s *FunctionsService) Create(body FunctionCreate) (*FunctionOut, error) {
+	if err := requireField(body.Slug, "Slug"); err != nil {
+		return nil, err
+	}
+	if err := requireField(body.Name, "Name"); err != nil {
+		return nil, err
+	}
+	if err := requireMap(body.InputSchema, "InputSchema", true); err != nil {
+		return nil, err
+	}
+	if err := requireMap(body.OutputSchema, "OutputSchema", true); err != nil {
+		return nil, err
+	}
+	existing, err := s.List()
+	if err != nil {
+		return nil, err
+	}
+	for _, f := range existing {
+		if f.Slug == body.Slug {
+			return nil, validationErrorf(
+				"a function with slug %q already exists (id=%d) — pick a different slug, "+
+					"or use that function's id instead of creating another.", body.Slug, f.ID)
+		}
+	}
 	var out FunctionOut
 	return &out, s.h.do("POST", "/api/functions", body, nil, &out)
 }
 
 func (s *FunctionsService) Archive(fnID int) error {
+	if err := requireID(fnID, "fnID"); err != nil {
+		return err
+	}
 	return s.h.do("DELETE", "/api/functions/"+strconv.Itoa(fnID), nil, nil, nil)
 }
 
 func (s *FunctionsService) Versions(fnID int) ([]VersionOut, error) {
+	if err := requireID(fnID, "fnID"); err != nil {
+		return nil, err
+	}
 	var out []VersionOut
 	return out, s.h.do("GET", "/api/functions/"+strconv.Itoa(fnID)+"/versions", nil, nil, &out)
 }
 
 // CreateVersion snapshots the definition (sections, model_binding, tools, …).
 func (s *FunctionsService) CreateVersion(fnID int, snapshot map[string]any, message string) (*VersionOut, error) {
+	if err := requireID(fnID, "fnID"); err != nil {
+		return nil, err
+	}
+	if err := requireMap(snapshot, "snapshot", false); err != nil {
+		return nil, err
+	}
 	var out VersionOut
 	return &out, s.h.do("POST", "/api/functions/"+strconv.Itoa(fnID)+"/versions",
 		map[string]any{"snapshot": snapshot, "message": message}, nil, &out)
 }
 
 func (s *FunctionsService) Health(fnID, windowHours int) (*HealthOut, error) {
+	if err := requireID(fnID, "fnID"); err != nil {
+		return nil, err
+	}
 	var out HealthOut
 	q := url.Values{"window_hours": {strconv.Itoa(windowHours)}}
 	return &out, s.h.do("GET", "/api/functions/"+strconv.Itoa(fnID)+"/health", nil, q, &out)
 }
 
 // Types returns compilable caller-side types for the function's contract
-// (lang: "go" is not offered server-side yet — "typescript" or "python").
+// (lang: "typescript", "python", or "go").
 func (s *FunctionsService) Types(fnID int, lang string) (*TypesOut, error) {
+	if err := requireID(fnID, "fnID"); err != nil {
+		return nil, err
+	}
 	var out TypesOut
 	q := url.Values{"lang": {lang}}
 	return &out, s.h.do("GET", "/api/functions/"+strconv.Itoa(fnID)+"/types", nil, q, &out)
@@ -356,11 +496,20 @@ func (s *FunctionsService) Types(fnID int, lang string) (*TypesOut, error) {
 type VersionsService struct{ h *httpClient }
 
 func (s *VersionsService) Get(vID int) (*VersionOut, error) {
+	if err := requireID(vID, "vID"); err != nil {
+		return nil, err
+	}
 	var out VersionOut
 	return &out, s.h.do("GET", "/api/versions/"+strconv.Itoa(vID), nil, nil, &out)
 }
 
 func (s *VersionsService) Playground(vID int, input map[string]any, model string) (*PlaygroundOut, error) {
+	if err := requireID(vID, "vID"); err != nil {
+		return nil, err
+	}
+	if err := requireMap(input, "input", true); err != nil {
+		return nil, err
+	}
 	if model == "" {
 		model = "mock-small"
 	}
@@ -370,16 +519,25 @@ func (s *VersionsService) Playground(vID int, input map[string]any, model string
 }
 
 func (s *VersionsService) Submit(vID int) error {
+	if err := requireID(vID, "vID"); err != nil {
+		return err
+	}
 	return s.h.do("POST", "/api/versions/"+strconv.Itoa(vID)+"/submit",
 		map[string]any{}, nil, nil)
 }
 
 func (s *VersionsService) Approve(vID int, comment string) error {
+	if err := requireID(vID, "vID"); err != nil {
+		return err
+	}
 	return s.h.do("POST", "/api/versions/"+strconv.Itoa(vID)+"/approve",
 		map[string]any{"comment": comment}, nil, nil)
 }
 
 func (s *VersionsService) Reject(vID int, comment string) error {
+	if err := requireID(vID, "vID"); err != nil {
+		return err
+	}
 	return s.h.do("POST", "/api/versions/"+strconv.Itoa(vID)+"/reject",
 		map[string]any{"comment": comment}, nil, nil)
 }
@@ -388,17 +546,29 @@ func (s *VersionsService) Reject(vID int, comment string) error {
 type PlansService struct{ h *httpClient }
 
 func (s *PlansService) List(fnID int) ([]PlanBrief, error) {
+	if err := requireID(fnID, "fnID"); err != nil {
+		return nil, err
+	}
 	var out []PlanBrief
 	return out, s.h.do("GET", "/api/functions/"+strconv.Itoa(fnID)+"/plans", nil, nil, &out)
 }
 
 func (s *PlansService) Create(fnID int, name string) (*PlanCreated, error) {
+	if err := requireID(fnID, "fnID"); err != nil {
+		return nil, err
+	}
+	if err := requireField(name, "name"); err != nil {
+		return nil, err
+	}
 	var out PlanCreated
 	return &out, s.h.do("POST", "/api/functions/"+strconv.Itoa(fnID)+"/plans",
 		map[string]any{"name": name}, nil, &out)
 }
 
 func (s *PlansService) Scores(planID int) ([]ScoreOut, error) {
+	if err := requireID(planID, "planID"); err != nil {
+		return nil, err
+	}
 	var out []ScoreOut
 	return out, s.h.do("GET", "/api/plans/"+strconv.Itoa(planID)+"/scores", nil, nil, &out)
 }
@@ -407,17 +577,41 @@ func (s *PlansService) Scores(planID int) ([]ScoreOut, error) {
 type ExperimentsService struct{ h *httpClient }
 
 func (s *ExperimentsService) List(fnID int) ([]ExperimentOut, error) {
+	if err := requireID(fnID, "fnID"); err != nil {
+		return nil, err
+	}
 	var out []ExperimentOut
 	return out, s.h.do("GET", "/api/functions/"+strconv.Itoa(fnID)+"/experiments", nil, nil, &out)
 }
 
 // Create pins an experiment; pins mirrors the API body (version_ids, models, …).
 func (s *ExperimentsService) Create(fnID int, pins map[string]any) (*ExperimentOut, error) {
+	if err := requireID(fnID, "fnID"); err != nil {
+		return nil, err
+	}
+	// ExperimentCreate (backend/app/schemas.py) requires version_ids — a
+	// planID-only or singleInput-only pin still needs SOME version to run
+	// against, so this is the one field worth enforcing here rather than
+	// letting an empty pins map reach the backend as a 422.
+	v, ok := pins["version_ids"]
+	empty := !ok || v == nil
+	if !empty {
+		rv := reflect.ValueOf(v)
+		if (rv.Kind() == reflect.Slice || rv.Kind() == reflect.Array) && rv.Len() == 0 {
+			empty = true
+		}
+	}
+	if empty {
+		return nil, validationErrorf(`Create needs pins["version_ids"] — at least one version to run.`)
+	}
 	var out ExperimentOut
 	return &out, s.h.do("POST", "/api/functions/"+strconv.Itoa(fnID)+"/experiments", pins, nil, &out)
 }
 
 func (s *ExperimentsService) Run(expID int) (*ExperimentOut, error) {
+	if err := requireID(expID, "expID"); err != nil {
+		return nil, err
+	}
 	var out ExperimentOut
 	return &out, s.h.do("POST", "/api/experiments/"+strconv.Itoa(expID)+"/run",
 		map[string]any{}, nil, &out)
@@ -427,6 +621,9 @@ func (s *ExperimentsService) Run(expID int) (*ExperimentOut, error) {
 type ScoresService struct{ h *httpClient }
 
 func (s *ScoresService) List(fnID int) ([]ScoreOut, error) {
+	if err := requireID(fnID, "fnID"); err != nil {
+		return nil, err
+	}
 	var out []ScoreOut
 	return out, s.h.do("GET", "/api/functions/"+strconv.Itoa(fnID)+"/scores", nil, nil, &out)
 }
@@ -442,11 +639,25 @@ type EvalService struct {
 type DatasetsService struct{ h *httpClient }
 
 func (s *DatasetsService) List(fnID int) ([]DatasetOut, error) {
+	if err := requireID(fnID, "fnID"); err != nil {
+		return nil, err
+	}
 	var out []DatasetOut
 	return out, s.h.do("GET", "/api/functions/"+strconv.Itoa(fnID)+"/datasets", nil, nil, &out)
 }
 
 func (s *DatasetsService) Create(fnID int, name string, rows []map[string]any) (*DatasetOut, error) {
+	if err := requireID(fnID, "fnID"); err != nil {
+		return nil, err
+	}
+	if err := requireField(name, "name"); err != nil {
+		return nil, err
+	}
+	for i, r := range rows {
+		if _, ok := r["input"]; !ok {
+			return nil, validationErrorf("rows[%d] is missing required key 'input'.", i)
+		}
+	}
 	if rows == nil {
 		rows = []map[string]any{}
 	}
@@ -459,24 +670,42 @@ func (s *DatasetsService) Create(fnID int, name string, rows []map[string]any) (
 type DeploymentsService struct{ h *httpClient }
 
 func (s *DeploymentsService) Deploy(fnID, versionID int) (*DeploymentOut, error) {
+	if err := requireID(fnID, "fnID"); err != nil {
+		return nil, err
+	}
+	if err := requireID(versionID, "versionID"); err != nil {
+		return nil, err
+	}
 	var out DeploymentOut
 	return &out, s.h.do("POST", "/api/functions/"+strconv.Itoa(fnID)+"/deploy",
 		map[string]any{"version_id": versionID}, nil, &out)
 }
 
 func (s *DeploymentsService) Current(fnID int) (*DeploymentOut, error) {
+	if err := requireID(fnID, "fnID"); err != nil {
+		return nil, err
+	}
 	var out DeploymentOut
 	return &out, s.h.do("GET", "/api/functions/"+strconv.Itoa(fnID)+"/deployment", nil, nil, &out)
 }
 
 func (s *DeploymentsService) History(fnID int) ([]DeploymentOut, error) {
+	if err := requireID(fnID, "fnID"); err != nil {
+		return nil, err
+	}
 	var out []DeploymentOut
 	return out, s.h.do("GET", "/api/functions/"+strconv.Itoa(fnID)+"/deployments", nil, nil, &out)
 }
 
 func (s *DeploymentsService) Rollback(fnID int, versionID *int) (*DeploymentOut, error) {
+	if err := requireID(fnID, "fnID"); err != nil {
+		return nil, err
+	}
 	body := map[string]any{}
 	if versionID != nil {
+		if err := requireID(*versionID, "versionID"); err != nil {
+			return nil, err
+		}
 		body["version_id"] = *versionID
 	}
 	var out DeploymentOut
@@ -487,17 +716,26 @@ func (s *DeploymentsService) Rollback(fnID int, versionID *int) (*DeploymentOut,
 type InvokeKeysService struct{ h *httpClient }
 
 func (s *InvokeKeysService) List(fnID int) ([]InvokeKeyOut, error) {
+	if err := requireID(fnID, "fnID"); err != nil {
+		return nil, err
+	}
 	var out []InvokeKeyOut
 	return out, s.h.do("GET", "/api/functions/"+strconv.Itoa(fnID)+"/invoke-keys", nil, nil, &out)
 }
 
 func (s *InvokeKeysService) Mint(fnID int, name string) (*InvokeKeyMinted, error) {
+	if err := requireID(fnID, "fnID"); err != nil {
+		return nil, err
+	}
 	var out InvokeKeyMinted
 	return &out, s.h.do("POST", "/api/functions/"+strconv.Itoa(fnID)+"/invoke-keys",
 		map[string]any{"name": name}, nil, &out)
 }
 
 func (s *InvokeKeysService) Revoke(keyID int) error {
+	if err := requireID(keyID, "keyID"); err != nil {
+		return err
+	}
 	return s.h.do("DELETE", "/api/invoke-keys/"+strconv.Itoa(keyID), nil, nil, nil)
 }
 
@@ -511,6 +749,17 @@ func (s *ProviderKeysService) List() ([]map[string]any, error) {
 }
 
 func (s *ProviderKeysService) Add(body map[string]any) (map[string]any, error) {
+	provider, _ := body["provider"].(string)
+	if err := requireField(provider, "provider"); err != nil {
+		return nil, err
+	}
+	secret, ok := body["secret"].(map[string]any)
+	if !ok {
+		return nil, validationErrorf("secret must be a map[string]any.")
+	}
+	if err := requireMap(secret, "secret", false); err != nil {
+		return nil, err
+	}
 	var out map[string]any
 	return out, s.h.do("POST", "/api/provider-keys", body, nil, &out)
 }
@@ -540,11 +789,17 @@ func (s *TracesService) List(fnID int, source string, limit int) ([]TraceSummary
 }
 
 func (s *TracesService) Get(traceID string) (map[string]any, error) {
+	if err := requireField(traceID, "traceID"); err != nil {
+		return nil, err
+	}
 	var out map[string]any
 	return out, s.h.do("GET", "/api/traces/"+traceID, nil, nil, &out)
 }
 
 func (s *TracesService) Flag(traceID string) (map[string]any, error) {
+	if err := requireField(traceID, "traceID"); err != nil {
+		return nil, err
+	}
 	var out map[string]any
 	return out, s.h.do("POST", "/api/traces/"+traceID+"/flag",
 		map[string]any{}, nil, &out)
@@ -560,13 +815,57 @@ func (s *AuthTokensService) List() ([]TokenOut, error) {
 
 // Mint returns the plaintext token — in this response ONLY.
 func (s *AuthTokensService) Mint(name string) (*TokenMinted, error) {
+	if err := requireField(name, "name"); err != nil {
+		return nil, err
+	}
 	var out TokenMinted
 	return &out, s.h.do("POST", "/api/auth/tokens",
 		map[string]any{"name": name}, nil, &out)
 }
 
 func (s *AuthTokensService) Revoke(tokenID string) error {
+	if err := requireField(tokenID, "tokenID"); err != nil {
+		return err
+	}
 	return s.h.do("DELETE", "/api/auth/tokens/"+tokenID, nil, nil, nil)
+}
+
+// SpaceCreated is the response from SpacesService.Create.
+type SpaceCreated struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// SpacesService manages spaces.
+type SpacesService struct{ h *httpClient }
+
+// Create validates name and that no space with this name already exists
+// for the account (the same exact-name match get_scope's X-Space lookup
+// uses — see backend/app/auth_usermanagement/security/scope.go), so a
+// typo'd "create" that was meant to be a "switch" fails loudly here
+// instead of quietly leaving two same-named spaces.
+func (s *SpacesService) Create(name string) (*SpaceCreated, error) {
+	if err := requireField(name, "name"); err != nil {
+		return nil, err
+	}
+	var me struct {
+		Spaces []struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"spaces"`
+	}
+	if err := s.h.do("GET", "/api/me", nil, nil, &me); err != nil {
+		return nil, err
+	}
+	for _, sp := range me.Spaces {
+		if sp.Name == name {
+			return nil, validationErrorf(
+				"a space named %q already exists (id=%s) — use Client.UseSpace(%q) "+
+					"to switch to it instead of creating another.", name, sp.ID, name)
+		}
+	}
+	var out SpaceCreated
+	return &out, s.h.do("POST", "/api/spaces", map[string]any{"name": name}, nil, &out)
 }
 
 // AuthService groups auth-owned resources.
@@ -576,6 +875,7 @@ type AuthService struct{ Tokens *AuthTokensService }
 type Client struct {
 	h           *httpClient
 	Functions   *FunctionsService
+	Spaces      *SpacesService
 	Versions    *VersionsService
 	Eval        *EvalService
 	Datasets    *DatasetsService
@@ -591,6 +891,7 @@ func NewClient(token string, opts ...Option) *Client {
 	return &Client{
 		h:         h,
 		Functions: &FunctionsService{h},
+		Spaces:    &SpacesService{h},
 		Versions:  &VersionsService{h},
 		Eval: &EvalService{Plans: &PlansService{h},
 			Experiments: &ExperimentsService{h}, Scores: &ScoresService{h}},
@@ -606,6 +907,28 @@ func NewClient(token string, opts ...Option) *Client {
 func (c *Client) Me() (map[string]any, error) {
 	var out map[string]any
 	return out, c.h.do("GET", "/api/me", nil, nil, &out)
+}
+
+// UseSpace scopes every later space-scoped call to one space by name (the
+// X-Space header get_scope reads — see
+// backend/app/auth_usermanagement/security/scope.go), instead of whatever
+// this token's default space resolves to.
+//
+// Opt-in: if you never call this, nothing changes — no X-Space header is
+// ever sent, same as before this method existed, and the backend resolves
+// its own default space exactly as it always has.
+//
+// Re-validates name against a FRESH GET /api/me every call — returning
+// *SpaceNotFoundError rather than accepting a name nobody checked. Pass ""
+// to clear the override.
+func (c *Client) UseSpace(name string) error {
+	return c.h.useSpace(name)
+}
+
+// CurrentSpace is the space name UseSpace last set, or "" if nothing has
+// been selected (the default state — see UseSpace).
+func (c *Client) CurrentSpace() string {
+	return c.h.space
 }
 
 // Raw calls any management-API path directly, decoding the JSON response

@@ -13,7 +13,8 @@
   ],
   "scripts": {
     "build": "tsc",
-    "check": "tsc --noEmit"
+    "check": "tsc --noEmit",
+    "test": "npm run build && node test-yaml-endpoints.mjs"
   },
   "repository": {
     "type": "git",
@@ -23,7 +24,9 @@
     "node": ">=18"
   },
   "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
     "@types/node": "^26.3.0",
+    "js-yaml": "^5.4.2",
     "typescript": "^5.5.0"
   }
 }

@@ -222,6 +222,8 @@ func run(args []string) error {
 		return cmdEval(rest)
 	case "logs":
 		return cmdLogs(rest)
+	case "types":
+		return cmdTypes(rest)
 	default:
 		printUsage()
 		return fmt.Errorf("unknown command %q", cmd)
@@ -247,6 +249,7 @@ Operate
   fn pin <function-id> <version-id>      remember a version for this folder
   fn diff <function-id> <version-id-a> <version-id-b>   compare two versions
   fn logs <function-id> [--limit N]      recent production calls
+  fn types <function-id> [--lang ts|python|go] [-o file]   caller-side types
 
 Every command needs `+"`fn login`"+` first except init and version.`)
 }
@@ -925,6 +928,42 @@ func cmdLogs(args []string) error {
 			status = "FAILED"
 		}
 		fmt.Printf("%-7s  %6dms  %-16s  $%-9.4f  %s\n", status, t.LatencyMS, t.Model, t.Cost, t.TraceID)
+	}
+	return nil
+}
+
+func cmdTypes(args []string) error {
+	fs := newFlagSet("types")
+	lang := fs.String("lang", "typescript", "typescript | python | go")
+	outPath := fs.String("o", "", "write to this file instead of stdout")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return fmt.Errorf("usage: fn types <function-id> [--lang typescript|python|go] [-o file]")
+	}
+	fnID, err := strconv.Atoi(fs.Arg(0))
+	if err != nil {
+		return fmt.Errorf("function-id must be a number")
+	}
+	c, err := client()
+	if err != nil {
+		return err
+	}
+	types, err := c.Functions.Types(fnID, *lang)
+	if err != nil {
+		return err
+	}
+	if *outPath != "" {
+		if err := os.WriteFile(*outPath, []byte(types.Source), 0o644); err != nil {
+			return err
+		}
+		fmt.Printf("Wrote %s types for %s to %s\n", types.Language, types.Function, *outPath)
+		return nil
+	}
+	fmt.Print(types.Source)
+	if !strings.HasSuffix(types.Source, "\n") {
+		fmt.Println()
 	}
 	return nil
 }
