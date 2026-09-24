@@ -37,6 +37,7 @@ from fnai import Client, FnaiError, write_starter_yaml  # noqa: E402
 
 CONFIG_PATH = Path.home() / ".fnai" / "config.json"
 PIN_PATH = Path(".fnai") / "pin.json"
+DEFAULT_BASE_URL = "https://uat.fnai.dev"
 
 
 # ── config / pin ──────────────────────────────────────────────────────────
@@ -90,7 +91,7 @@ def get_client(base_url: str | None = None) -> Client:
     token = os.environ.get("FNAI_TOKEN") or cfg.get("token")
     if not token:
         raise CliError("not signed in — run `fn login` first (or set FNAI_TOKEN)")
-    base = base_url or os.environ.get("FNAI_BASE_URL") or cfg.get("base_url") or "http://localhost:8000"
+    base = base_url or os.environ.get("FNAI_BASE_URL") or cfg.get("base_url") or DEFAULT_BASE_URL
     return Client(token=token, base_url=base)
 
 
@@ -106,7 +107,7 @@ def cmd_login(args: argparse.Namespace) -> None:
         cfg["base_url"] = args.base_url
     save_config(cfg)
     try:
-        me = Client(token=token, base_url=cfg.get("base_url", "http://localhost:8000")).me()
+        me = Client(token=token, base_url=cfg.get("base_url", DEFAULT_BASE_URL)).me()
     except FnaiError as e:
         raise CliError(f"saved the token, but it doesn't seem to work: {friendly(e)}")
     print(f"Signed in as {me.get('user_id')}.")
@@ -156,7 +157,7 @@ def cmd_run(args: argparse.Namespace) -> None:
     from fnai import Function
     cfg = load_config()
     base = (args.base_url or os.environ.get("FNAI_BASE_URL")
-            or cfg.get("base_url") or "http://localhost:8000")
+            or cfg.get("base_url") or DEFAULT_BASE_URL)
     f = Function(args.slug, api_key=key, base_url=base)
     res = f.run(**payload)
     if not res.ok:
@@ -311,7 +312,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     lg = sub.add_parser("login", help="store your personal access token")
     lg.add_argument("--token", help="paste your token instead of typing it interactively")
-    lg.add_argument("--base-url", help="server URL (default: production)")
+    lg.add_argument("--base-url", help=f"server URL (default: {DEFAULT_BASE_URL})")
     lg.set_defaults(func=cmd_login)
 
     it = sub.add_parser("init", help="write a working example function to a file")
