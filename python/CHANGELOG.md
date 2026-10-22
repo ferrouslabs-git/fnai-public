@@ -1,5 +1,60 @@
 # Changelog
 
+## 0.8.0 — 2026-10-22
+
+- **Changed: deploying takes a model.** A function saved by the builder, `load_yaml` or the AI tools names no model, and production calls used to quietly run on the mock. Now `fn.deploy("note", model="gpt-4o-mini")` and `c.deployments.deploy(fn_id, version_id, model="gpt-4o-mini", temperature=0.2)` choose the model the deployment serves with. Without one the space's default model is used, and with neither the deploy is refused. `fn deploy <fn> <version> --model gpt-4o-mini` does the same.
+- **New: `c.models.list()`** (and `fn models`) lists every model you can name, with its provider, its price and whether this space has a key for it. A model name that is not on the list is refused with the available names. Add a provider key with `c.keys.provider.add(...)`.
+
+- **New: report a call that ran on your own servers.** `fn.report_trace(trace)` (Python) / `fn.reportTrace(trace)` (TypeScript) sends it to `POST /v1/traces`, so it shows in the monitor next to hosted calls. `trace_id`, `schema_version`, `source` (`self_hosted`) and `created_at` are filled in when you leave them out. Sending the same `trace_id` again is harmless.
+
+## 0.7.0 — 2026-10-13
+
+- **New: change a loaded version.** `remove_input`, `remove_output`, `remove_step`, `load_draft(..., fresh=True)` and `fn.changes()`. A loaded draft can now lose parts, not only gain them.
+  `fresh` keeps the function but starts it empty; it always saves as a NEW version (it can't overwrite the one it
+  grew from), and `submit()` prints what was dropped, added or changed first. `load_draft` also no longer shares
+  its schema objects with the version it loaded.
+- **Changed: every saved version keeps its YAML.** Saving no longer deletes the draft file: it becomes that
+  version's copy, `.fnai/versions/<name>/v<N>.yaml` (`versions_folder=` / `$FNAI_VERSIONS_DIR` to move it,
+  `keep_versions=False` to turn it off). Each thing you edit has its own working file, so two drafts of one
+  function never overwrite each other: `<name>.yaml`, `<name>.v3.yaml` (editing draft v3),
+  `<name>.from-v1.yaml` (a new version built from v1). `load_yaml("name")` finds a draft whatever it is called
+  and asks when two match; a saved copy knows which version it is.
+- **New: `client.export_yaml("my_function")`** writes every version as `v1.yaml`, `v2.yaml`, ... from the server.
+- **New: `submit(new_version=True)`.** Always creates a NEW version, even if the one you started from is a draft;
+  that version is left as it was and the new one records it as its parent. Nothing is deployed.
+- **Fixed: loading a version no longer drops parts the builder has no call for.** `load_draft` (and a saved
+  draft file) now carry `needs`, `preprocessors`, `derived` and `sensitive` fields and `server:` tool entries
+  through to the next version, in their original order. `print(fn)` shows them. A version saved in the older
+  editor format is refused with a clear message instead of loading blank. `load_yaml` accepts files that have
+  these parts.
+- **New: start from any version.** `c.load_draft("my_function", version=1)` loads that version's content.
+  A deployed (frozen) version is never changed: saving creates a NEW version based on it (its parent is
+  recorded) and never overwrites another draft. A draft version is edited in place. `print(fn)` says
+  which, and the draft file remembers it, so a stopped script cannot turn into an overwrite.
+- **New: look a function up by its slug.** `c.functions.get("my_function")` and
+  `c.load_draft("my_function")` accept a slug as well as an id. An unknown slug raises a 404 that says
+  so, suggests the closest slug and lists the functions in the space.
+- **Changed: `functions.new()` no longer creates anything on the server.** The function is created
+  when you call `submit()`, so a stopped script leaves no empty function behind (`fn.id` is `None` until
+  then). `new()` only does a read-only check that the name is free (archived functions keep their name,
+  so they count). A failed save after the function was created is remembered, so a retry does not create
+  it twice.
+- **New: build a function one part at a time.** `client.functions.new(name)`, then `add_input` /
+  `add_output` / `add_prompt` / `add_section` / `add_example` / `add_step` / `add_tool` / `add_rubric` /
+  `set_memory` / `set_mode`, then `submit()`. Every call is checked against the function-definition
+  rules as you make it and raises `DefinitionError` saying what to fix.
+- **Fixed: the draft builder sent a shape the server refuses** (`required` inside each field, no
+  `flow`, tool options at the wrong level). It now sends a complete v2 definition.
+- **New: `print(fn)`** shows the YAML and what is missing; `functions.get` / `create` results print the
+  same way and are still dicts.
+- **New: a draft file on your computer**, kept up to date after every change (default
+  `.fnai/drafts/<slug>.yaml`; `save_to=`, `drafts_folder=`, or `FNAI_DRAFTS_DIR`). `submit()` deletes
+  it. `fn.save_yaml(path)` writes a readable copy; `client.load_yaml(path_or_name)` reads one back
+  (needs `pyyaml`).
+- **New: `fn.check_input(sample)`**, **`Function.check(...)`**, **`client.tools`**,
+  **`datasets.upload`**, **`deployments.deploy`** returns `endpoint` + `curl`, **`experiments.run`**
+  returns findings with the scores, **`experiments.compare([...])`**.
+
 ## 0.3.0 — 2026-08-26
 
 - **New: `parse_prompt_file(path)`.** Reads a `.yaml`/`.yml`/`.json` prompt
@@ -18,7 +73,7 @@
   The manual counterpart — same result, but you supply the sections/schemas
   directly instead of loading them from a file.
 
-## Unreleased
+## Earlier changes that were never listed under a version
 
 - **Removed: `versions.submit` / `versions.approve` / `versions.reject`.** The
   human approval step is gone from the product — `deployments.deploy` now takes

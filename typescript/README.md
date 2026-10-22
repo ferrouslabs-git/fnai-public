@@ -101,3 +101,16 @@ what's wrong, rather than a generic 422 from the server.
 ## License
 
 Apache License 2.0.
+
+## Report a call that ran on your own servers
+
+```ts
+const { trace_id, duplicate } = await fn.reportTrace({
+  function_id: 3, version_id: 4, artifact_hash: "…64 characters…",
+  input: { document: "…" }, output: { summary: "…" }, success: true,
+  steps: [{ type: "llm" }], tokens_in: 12, tokens_out: 8, cost: 0.0003, latency_ms: 840,
+});
+// sending the same trace_id again is harmless: duplicate comes back true
+```
+
+It shows in the monitor next to hosted calls. See `docs/self-hosted-traces.md`.

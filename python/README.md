@@ -115,6 +115,7 @@ what's wrong, rather than a generic 422 from the server.
 |---|---|---|
 | `fn.contract()` | `GET /v1/run/{slug}/contract` | Active deployment schemas |
 | `fn.run(**input)` | `POST /v1/run/{slug}` | Execute active deployment |
+| `fn.report_trace(trace)` | `POST /v1/traces` | Report a call that ran on your own servers (see `docs/self-hosted-traces.md`) |
 
 Semantics:
 - API-level problems raise `FnaiError` (`.status`, `.detail`): 401 bad key, 404 unknown/undeployed function, 422 input doesn't match the contract, 504 execution timeout.
@@ -156,3 +157,15 @@ stripped down to just `/usr/bin:/bin` — no `python3` reachable at all.
 ## License
 
 Apache License 2.0 — see [LICENSE](LICENSE).
+
+## Report a call that ran on your own servers
+
+```python
+fn.report_trace({
+    "function_id": 3, "version_id": 4, "artifact_hash": "…64 characters…",
+    "input": {"document": "…"}, "output": {"summary": "…"}, "success": True,
+    "steps": [{"type": "llm"}], "tokens_in": 12, "tokens_out": 8, "cost": 0.0003, "latency_ms": 840,
+})   # → {"trace_id": "…", "duplicate": False}; the same trace_id again is harmless
+```
+
+It shows in the monitor next to hosted calls. See `docs/self-hosted-traces.md`.

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fnai"
-version = "0.4.0"
+version = "0.8.0"
 description = "Python client for functionalAI — invoke deployed functions and drive the management API"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -39,3 +39,7 @@ Issues = "https://github.com/ferrouslabs-git/fnai-public/issues"
 
 [tool.setuptools]
 py-modules = ["fnai", "fnai_mcp", "fn_cli"]
+
+# Ship the task guide with the install (pip install fnai -> share/fnai/GUIDE.md).
+[tool.setuptools.data-files]
+"share/fnai" = ["GUIDE.md", "AGENTS.md"]

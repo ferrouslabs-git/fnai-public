@@ -83,3 +83,24 @@ API grows). Dynamic payloads (snapshots, JSON Schemas) are `map[string]any`.
 New here? [SDK quickstart](https://github.com/ferrouslabs-git/functionalAI/blob/staging/docs/sdk-quickstart.md)
 · [credential guide](https://github.com/ferrouslabs-git/functionalAI/blob/staging/docs/sdk-auth.md).
 License: Apache 2.0.
+
+## Which function do I use?
+
+See [GUIDE.md](GUIDE.md) — a task-by-task list, including building a function one part at a time
+(`c.Functions.New(...)`), the YAML draft file kept on your computer, and loading it back with the `yamlload`
+package. The main `fnai` package still has no dependencies: only `yamlload` uses a YAML library
+(`gopkg.in/yaml.v3`), so programs that do not import it never download it.
+
+## Report a call that ran on your own servers
+
+```go
+receipt, err := fn.ReportTrace(map[string]any{
+    "function_id": 3, "version_id": 4, "artifact_hash": "…64 characters…",
+    "input": map[string]any{"document": "…"}, "output": map[string]any{"summary": "…"},
+    "success": true, "steps": []any{map[string]any{"type": "llm"}},
+    "tokens_in": 12, "tokens_out": 8, "cost": 0.0003, "latency_ms": 840,
+})
+// receipt.TraceID, receipt.Duplicate — sending the same trace_id again is harmless
+```
+
+It shows in the monitor next to hosted calls. See `docs/self-hosted-traces.md`.

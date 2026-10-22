@@ -1,7 +1,7 @@
 {
   "name": "fnai",
-  "version": "0.3.0",
-  "description": "TypeScript client for functionalAI — invoke deployed functions and drive the management API",
+  "version": "0.8.0",
+  "description": "TypeScript client for functionalAI \u2014 invoke deployed functions and drive the management API",
   "license": "Apache-2.0",
   "type": "module",
   "main": "dist/fnai.js",
@@ -9,12 +9,14 @@
   "files": [
     "dist",
     "schema.d.ts",
-    "README.md"
+    "README.md",
+    "GUIDE.md",
+    "AGENTS.md"
   ],
   "scripts": {
     "build": "tsc",
     "check": "tsc --noEmit",
-    "test": "npm run build && node test-yaml-endpoints.mjs"
+    "test": "npm run build && node test-yaml-endpoints.mjs && node test-function-draft.mjs && node test-builder.mjs && node test-report-trace.mjs"
   },
   "repository": {
     "type": "git",
@@ -28,5 +30,13 @@
     "@types/node": "^26.3.0",
     "js-yaml": "^5.4.2",
     "typescript": "^5.5.0"
+  },
+  "peerDependencies": {
+    "js-yaml": ">=4"
+  },
+  "peerDependenciesMeta": {
+    "js-yaml": {
+      "optional": true
+    }
   }
 }

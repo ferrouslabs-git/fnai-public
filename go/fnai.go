@@ -21,20 +21,27 @@ package fnai
 
 import (
 	"bytes"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
 	"os"
 	"reflect"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 )
 
+// nonAlnumRe is slugify's run of non-alphanumeric characters to collapse
+// into a single underscore (mirrors the Python/TS SDKs' _slugify).
+var nonAlnumRe = regexp.MustCompile(`[^a-z0-9]+`)
+
 // Version is the client version.
-const Version = "0.2.0"
+const Version = "0.8.0"
 
 const defaultTimeout = 90 * time.Second // server caps execution at 60s
 
@@ -110,6 +117,11 @@ type httpClient struct {
 	// account's default space", exactly today's behavior before this field
 	// existed: opt-in, additive, never sent unless explicitly chosen.
 	space string
+	// draftsFolder is where FunctionDraft files go (default .fnai/drafts next to the program).
+	draftsFolder string
+	// versionsFolder is where a copy of every saved version goes (default .fnai/versions).
+	versionsFolder  string
+	noVersionCopies bool
 }
 
 // useSpace is Client.UseSpace()'s actual implementation. Validated against
@@ -183,7 +195,11 @@ func (h *httpClient) do(method, path string, body any, query url.Values, out any
 		}
 		detail := resp.Status
 		if json.NewDecoder(resp.Body).Decode(&parsed) == nil && parsed.Detail != nil {
-			detail = fmt.Sprint(parsed.Detail)
+			if str, ok := parsed.Detail.(string); ok {
+				detail = str
+			} else if b, err := json.Marshal(parsed.Detail); err == nil {
+				detail = string(b)
+			}
 		}
 		return &Error{Status: resp.StatusCode, Detail: detail}
 	}
@@ -197,6 +213,23 @@ func (h *httpClient) do(method, path string, body any, query url.Values, out any
 type Option func(*httpClient)
 
 // WithBaseURL points the client at a deployment (default http://localhost:8000).
+// WithDraftsFolder says where draft files (the YAML a FunctionDraft keeps up to date on your computer)
+// go. Without it they go to $FNAI_DRAFTS_DIR, else .fnai/drafts next to where the program runs.
+func WithDraftsFolder(dir string) Option {
+	return func(h *httpClient) { h.draftsFolder = dir }
+}
+
+// WithVersionsFolder says where a copy of every saved version goes: <dir>/<slug>/v<N>.yaml. Without it they go
+// to $FNAI_VERSIONS_DIR, else .fnai/versions beside the drafts folder.
+func WithVersionsFolder(dir string) Option {
+	return func(h *httpClient) { h.versionsFolder = dir }
+}
+
+// WithoutVersionCopies turns the copies of saved versions off: on save the draft file is just removed.
+func WithoutVersionCopies() Option {
+	return func(h *httpClient) { h.noVersionCopies = true }
+}
+
 func WithBaseURL(base string) Option {
 	return func(h *httpClient) { h.base = strings.TrimRight(base, "/") }
 }
@@ -268,6 +301,40 @@ func (f *Function) Run(input map[string]any) (*RunResult, error) {
 	return &out, nil
 }
 
+// TraceReceipt is the server's answer to ReportTrace.
+type TraceReceipt struct {
+	TraceID   string `json:"trace_id"`
+	Duplicate bool   `json:"duplicate"` // true when this trace had already been received
+}
+
+// ReportTrace reports one call that ran on YOUR servers, so it shows in the monitor next to hosted
+// calls. Give what only you know: function_id, version_id, artifact_hash, input, output, success,
+// error, steps, tokens_in, tokens_out, cost and latency_ms. trace_id, schema_version (1), source
+// ("self_hosted") and created_at (now) are filled in when you leave them out; set created_at
+// yourself when you report a call later than it happened. Hidden (sensitive) fields are hidden on
+// our side. Reporting the same trace_id again is harmless, so retry freely. The server answers 422
+// with the reason for a trace it refuses.
+func (f *Function) ReportTrace(trace map[string]any) (*TraceReceipt, error) {
+	id := make([]byte, 16)
+	if _, err := rand.Read(id); err != nil {
+		return nil, err
+	}
+	body := map[string]any{
+		"trace_id":       hex.EncodeToString(id),
+		"schema_version": 1,
+		"source":         "self_hosted",
+		"created_at":     time.Now().UTC().Format("2006-01-02T15:04:05.000000Z07:00"),
+	}
+	for k, v := range trace {
+		body[k] = v
+	}
+	var out TraceReceipt
+	if err := f.h.do("POST", "/v1/traces", body, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // ── management types (golden-path surface) ──────────────────────────────────
 
 type FunctionOut struct {
@@ -279,11 +346,13 @@ type FunctionOut struct {
 }
 
 type VersionOut struct {
-	ID       int            `json:"id"`
-	Number   int            `json:"number"`
-	Status   string         `json:"status"`
-	Message  string         `json:"message"`
-	Snapshot map[string]any `json:"snapshot"`
+	ID           int            `json:"id"`
+	Number       int            `json:"number"`
+	Status       string         `json:"status"`
+	Message      string         `json:"message"`
+	Snapshot     map[string]any `json:"snapshot"`
+	InputSchema  map[string]any `json:"input_schema"`
+	OutputSchema map[string]any `json:"output_schema"`
 }
 
 type DeploymentOut struct {
@@ -293,6 +362,13 @@ type DeploymentOut struct {
 	VersionNumber *int   `json:"version_number"`
 	Status        string `json:"status"`
 	Action        string `json:"action"`
+	// Model and Temperature are what this deployment serves with; Model is empty when the version names its own.
+	Model       string   `json:"model,omitempty"`
+	Temperature *float64 `json:"temperature,omitempty"`
+	// Endpoint and Curl are filled by Deploy: a ready-to-run call against the public runtime (put a
+	// minted fnk_* invoke key in place of the placeholder).
+	Endpoint string `json:"endpoint,omitempty"`
+	Curl     string `json:"curl,omitempty"`
 }
 
 type InvokeKeyOut struct {
@@ -367,9 +443,13 @@ type PlanCreated struct {
 }
 
 type ExperimentOut struct {
-	ID     int    `json:"id"`
-	Name   string `json:"name"`
-	Status string `json:"status"`
+	ID      int            `json:"id"`
+	Name    string         `json:"name"`
+	Status  string         `json:"status"`
+	Cost    float64        `json:"cost"`
+	Results map[string]any `json:"results"`
+	// Findings is filled by Run (what the experiment turned up, alongside the scores).
+	Findings []Finding `json:"findings,omitempty"`
 }
 
 type ScoreOut struct {
@@ -608,13 +688,19 @@ func (s *ExperimentsService) Create(fnID int, pins map[string]any) (*ExperimentO
 	return &out, s.h.do("POST", "/api/functions/"+strconv.Itoa(fnID)+"/experiments", pins, nil, &out)
 }
 
+// Run runs a draft experiment. The result carries the scoring details and a Findings list alongside them
+// — what the UI shows together. Use RunBare for the experiment without its findings.
 func (s *ExperimentsService) Run(expID int) (*ExperimentOut, error) {
-	if err := requireID(expID, "expID"); err != nil {
+	out, err := s.RunBare(expID)
+	if err != nil {
 		return nil, err
 	}
-	var out ExperimentOut
-	return &out, s.h.do("POST", "/api/experiments/"+strconv.Itoa(expID)+"/run",
-		map[string]any{}, nil, &out)
+	findings, err := s.Findings(expID)
+	if err != nil {
+		return nil, err
+	}
+	out.Findings = findings
+	return out, nil
 }
 
 // ScoresService is eval.scores — the per-function check library.
@@ -670,15 +756,14 @@ func (s *DatasetsService) Create(fnID int, name string, rows []map[string]any) (
 type DeploymentsService struct{ h *httpClient }
 
 func (s *DeploymentsService) Deploy(fnID, versionID int) (*DeploymentOut, error) {
-	if err := requireID(fnID, "fnID"); err != nil {
-		return nil, err
-	}
-	if err := requireID(versionID, "versionID"); err != nil {
-		return nil, err
-	}
-	var out DeploymentOut
-	return &out, s.h.do("POST", "/api/functions/"+strconv.Itoa(fnID)+"/deploy",
-		map[string]any{"version_id": versionID}, nil, &out)
+	return s.deploy(fnID, versionID, false, "", nil)
+}
+
+// DeployWithModel deploys a version served by `model` (and optionally `temperature`). A version saved by the
+// builder, YAML or the MCP tools names no model, so it needs one here (or a default model on the space);
+// otherwise the deploy is refused rather than served by the mock.
+func (s *DeploymentsService) DeployWithModel(fnID, versionID int, model string, temperature *float64) (*DeploymentOut, error) {
+	return s.deploy(fnID, versionID, false, model, temperature)
 }
 
 func (s *DeploymentsService) Current(fnID int) (*DeploymentOut, error) {
@@ -762,6 +847,25 @@ func (s *ProviderKeysService) Add(body map[string]any) (map[string]any, error) {
 	}
 	var out map[string]any
 	return out, s.h.do("POST", "/api/provider-keys", body, nil, &out)
+}
+
+// ModelsService lists the models you can name when deploying or running an experiment.
+type ModelsService struct{ h *httpClient }
+
+// ModelOut is one routable model. Usable is true when this space has what a call needs: the mock always, a
+// real model once its provider has an active key. Reason says what is missing when it is not.
+type ModelOut struct {
+	Model       string  `json:"model"`
+	Provider    string  `json:"provider"`
+	InputPer1k  float64 `json:"input_per_1k"`
+	OutputPer1k float64 `json:"output_per_1k"`
+	Usable      bool    `json:"usable"`
+	Reason      string  `json:"reason,omitempty"`
+}
+
+func (s *ModelsService) List() ([]ModelOut, error) {
+	var out []ModelOut
+	return out, s.h.do("GET", "/api/models", nil, nil, &out)
 }
 
 // KeysService groups the two key families.
@@ -880,6 +984,8 @@ type Client struct {
 	Eval        *EvalService
 	Datasets    *DatasetsService
 	Deployments *DeploymentsService
+	Models      *ModelsService
+	Tools       *ToolsService
 	Keys        *KeysService
 	Traces      *TracesService
 	Auth        *AuthService
@@ -897,6 +1003,8 @@ func NewClient(token string, opts ...Option) *Client {
 			Experiments: &ExperimentsService{h}, Scores: &ScoresService{h}},
 		Datasets:    &DatasetsService{h},
 		Deployments: &DeploymentsService{h},
+		Models:      &ModelsService{h},
+		Tools:       &ToolsService{h},
 		Keys:        &KeysService{Provider: &ProviderKeysService{h}, Invoke: &InvokeKeysService{h}},
 		Traces:      &TracesService{h},
 		Auth:        &AuthService{Tokens: &AuthTokensService{h}},

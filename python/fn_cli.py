@@ -144,6 +144,13 @@ def cmd_ls(args: argparse.Namespace) -> None:
         print(f"{f['id']:<6} {f['slug']:<28} {f['name']}")
 
 
+def cmd_models(args: argparse.Namespace) -> None:
+    c = get_client()
+    print(f"{'MODEL':<16} {'PROVIDER':<10} {'USABLE':<7} NOTE")
+    for m in c.models.list():
+        print(f"{m['model']:<16} {m['provider']:<10} {'yes' if m['usable'] else 'no':<7} {m.get('reason') or ''}")
+
+
 def cmd_run(args: argparse.Namespace) -> None:
     key = args.key or os.environ.get("FNAI_INVOKE_KEY")
     if not key:
@@ -170,7 +177,7 @@ def cmd_run(args: argparse.Namespace) -> None:
 
 def cmd_deploy(args: argparse.Namespace) -> None:
     c = get_client()
-    dep = c.deployments.deploy(args.function_id, args.version_id)
+    dep = c.deployments.deploy(args.function_id, args.version_id, model=args.model, temperature=args.temperature)
     if dep.get("status") == "pending":
         print(f"Pending approval (request id {dep['id']}) — this space requires a distinct "
              "approver to confirm before it goes live.")
@@ -326,6 +333,9 @@ def build_parser() -> argparse.ArgumentParser:
     ls = sub.add_parser("ls", help="list your functions")
     ls.set_defaults(func=cmd_ls)
 
+    md = sub.add_parser("models", help="list the models you can deploy with, and whether each has a key")
+    md.set_defaults(func=cmd_models)
+
     rn = sub.add_parser("run", help="invoke a deployed function")
     rn.add_argument("slug")
     rn.add_argument("--key", help="the function's fnk_... invoke key")
@@ -344,6 +354,9 @@ def build_parser() -> argparse.ArgumentParser:
     dp = sub.add_parser("deploy", help="make a version the live deployment")
     dp.add_argument("function_id", type=int)
     dp.add_argument("version_id", type=int)
+    dp.add_argument("--model", help="the model production calls run on (needed for a version saved from "
+                                    "the builder, YAML or MCP, unless the space has a default model)")
+    dp.add_argument("--temperature", type=float)
     dp.set_defaults(func=cmd_deploy)
 
     rb = sub.add_parser("rollback", help="roll back to the previous deployment")

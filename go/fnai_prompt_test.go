@@ -131,6 +131,10 @@ func newTestClient(t *testing.T) (*Client, *capturedCalls) {
 	t.Helper()
 	calls := &capturedCalls{}
 	mux := http.NewServeMux()
+	// CreateFunction checks the slug is free first (GET /api/functions)
+	mux.HandleFunc("GET /api/functions", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode([]FunctionOut{})
+	})
 	mux.HandleFunc("POST /api/functions", func(w http.ResponseWriter, r *http.Request) {
 		json.NewDecoder(r.Body).Decode(&calls.createBody)
 		w.WriteHeader(201)

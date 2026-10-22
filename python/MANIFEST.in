@@ -1,0 +1,4 @@
+include GUIDE.md
+include AGENTS.md
+include README.md
+include LICENSE
