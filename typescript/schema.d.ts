@@ -1536,7 +1536,12 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List Traces */
+        /**
+         * List Traces
+         * @description Newest first. Page with `before_id` (the `id` of the last trace you have; the next page is the traces
+         *     before it). Every filter is optional and they combine: `status` (success|partial|failed|escalated|...),
+         *     `success`, `model`, `tool` (traces whose steps include that tool), `since`/`until` (time range).
+         */
         get: operations["list_traces"];
         put?: never;
         post?: never;
@@ -3732,6 +3737,12 @@ export interface components {
              * @default true
              */
             run: boolean;
+            /**
+             * Tool Mode
+             * @default real
+             * @enum {string}
+             */
+            tool_mode: "real" | "mocked";
         };
         /** ExperimentOut */
         ExperimentOut: {
@@ -3792,6 +3803,8 @@ export interface components {
             }[] | null;
             /** Repeats */
             repeats?: number | null;
+            /** Tool Mode */
+            tool_mode?: ("real" | "mocked") | null;
         };
         /** ExperimentRef */
         ExperimentRef: {
@@ -4179,6 +4192,8 @@ export interface components {
             steps: {
                 [key: string]: unknown;
             }[];
+            /** Trace Id */
+            trace_id?: string | null;
             /**
              * Created At
              * Format: date-time
@@ -4279,6 +4294,8 @@ export interface components {
             tokens_out: number;
             /** Steps */
             steps: number;
+            /** Trace Id */
+            trace_id?: string | null;
             /**
              * Created At
              * Format: date-time
@@ -5523,6 +5540,10 @@ export interface components {
              * @default manual
              */
             source: string;
+            /** Tool Mocks */
+            tool_mocks?: {
+                [key: string]: unknown;
+            } | null;
         };
         /** RowOut */
         RowOut: {
@@ -5545,6 +5566,10 @@ export interface components {
              * @default manual
              */
             source: string;
+            /** Tool Mocks */
+            tool_mocks?: {
+                [key: string]: unknown;
+            } | null;
         };
         /** RowUpdate */
         RowUpdate: {
@@ -5558,6 +5583,10 @@ export interface components {
             } | null;
             /** Tags */
             tags?: string[] | null;
+            /** Tool Mocks */
+            tool_mocks?: {
+                [key: string]: unknown;
+            } | null;
         };
         /** RunMetaOut */
         RunMetaOut: {
@@ -6155,6 +6184,8 @@ export interface components {
         };
         /** TraceDetailOut */
         TraceDetailOut: {
+            /** Id */
+            id?: number | null;
             /** Trace Id */
             trace_id: string;
             /** Source */
@@ -6234,6 +6265,8 @@ export interface components {
         };
         /** TraceSummaryOut */
         TraceSummaryOut: {
+            /** Id */
+            id?: number | null;
             /** Trace Id */
             trace_id: string;
             /** Source */
@@ -6423,6 +6456,57 @@ export interface components {
              * @default
              */
             message: string;
+        };
+        /**
+         * VersionSubmitOut
+         * @description The result of the shared save action. `unchanged` is true when what was sent is identical to the latest
+         *     version, so nothing was written and that version came back as it was (FNA-REQ-416).
+         */
+        VersionSubmitOut: {
+            /** Id */
+            id: number;
+            /** Function Id */
+            function_id: number;
+            /** Number */
+            number: number;
+            /** Status */
+            status: string;
+            /** Snapshot */
+            snapshot: {
+                [key: string]: unknown;
+            };
+            /** Input Schema */
+            input_schema: {
+                [key: string]: unknown;
+            };
+            /** Output Schema */
+            output_schema: {
+                [key: string]: unknown;
+            };
+            /** Artifact Hash */
+            artifact_hash?: string | null;
+            /** Parent Id */
+            parent_id: number | null;
+            /** Message */
+            message: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Created By */
+            created_by?: string | null;
+            /** Source */
+            source?: string | null;
+            /** Approved By */
+            approved_by: string | null;
+            /** Approved At */
+            approved_at: string | null;
+            /**
+             * Unchanged
+             * @default false
+             */
+            unchanged: boolean;
         };
         /** VersionUpdate */
         VersionUpdate: {
@@ -7696,7 +7780,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["VersionOut"];
+                    "application/json": components["schemas"]["VersionSubmitOut"];
                 };
             };
             /** @description Validation Error */
@@ -10234,6 +10318,13 @@ export interface operations {
                 function_id?: number | null;
                 source?: string | null;
                 limit?: number;
+                before_id?: number | null;
+                status?: string | null;
+                success?: boolean | null;
+                model?: string | null;
+                tool?: string | null;
+                since?: string | null;
+                until?: string | null;
             };
             header?: {
                 authorization?: string | null;

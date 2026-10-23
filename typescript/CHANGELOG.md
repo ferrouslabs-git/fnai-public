@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9.0 — 2026-10-23
+
+- **New: a builder script can be run again, and a save of what is already there changes nothing.** `c.draft(name=..., existing="continue")` (`existing: "continue"` in TypeScript) carries on with a function that already exists instead of refusing. `submit()` compares your definition with the version it is based on: if it is identical it sends nothing, prints "No changes: vN is unchanged" and returns that version; if it differs it first prints what changed ("+ step Be brief.", "- input rating", "~ output total") and then saves. The server does the same for the plain save (`/api/functions/{id}/submit`, which now also returns `unchanged`), so the app and older SDKs behave the same. `submit(new_version=True)` still always makes a new version.
+
+- **New: pretend tool answers for experiments.** A dataset row can carry `tool_mocks` (what each tool should pretend to answer), and an experiment can run with `tool_mode="mocked"` so no real tool runs. See `add_row` / `addRow` and `experiments.create`.
+
+- **New: page and filter traces.** `c.traces.list({ functionId, beforeId, status, success, model, tool, since, until })`. Each trace now has an `id`; pass the last one you have as `beforeId` for the next page. `tool: "echo"` finds the runs whose steps include that tool.
+- **New: a call links to its trace.** Runtime call records carry a `trace_id`.
+
 ## 0.8.0 — 2026-10-22
 
 - **Changed: deploying takes a model.** A function saved by the builder or the AI tools names no model, and production calls used to quietly run on the mock. `c.deployments.deploy(fnId, versionId, { model: "gpt-4o-mini", temperature: 0.2 })` and the draft's `deploy(note, { model })` choose the model the deployment serves with. Without one the space's default model is used, and with neither the deploy is refused.

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.9.0 — 2026-10-23
+
+- **New: a builder script can be run again, and a save of what is already there changes nothing.** `c.draft(name=..., existing="continue")` (`existing: "continue"` in TypeScript) carries on with a function that already exists instead of refusing. `submit()` compares your definition with the version it is based on: if it is identical it sends nothing, prints "No changes: vN is unchanged" and returns that version; if it differs it first prints what changed ("+ step Be brief.", "- input rating", "~ output total") and then saves. The server does the same for the plain save (`/api/functions/{id}/submit`, which now also returns `unchanged`), so the app and older SDKs behave the same. `submit(new_version=True)` still always makes a new version.
+
+- **New: pretend tool answers for experiments.** A dataset row can carry `tool_mocks` (what each tool should pretend to answer), and an experiment can run with `tool_mode="mocked"` so no real tool runs. See `add_row` / `addRow` and `experiments.create`.
+
+- **New: page and filter traces.** `c.traces.list(fn_id, before_id=…, status=…, success=…, model=…, tool=…, since=…, until=…)`. Each trace now has an `id`; pass the last one you have as `before_id` for the next page. `tool="echo"` finds the runs whose steps include that tool.
+- **New: a call links to its trace.** Runtime call records (`/api/invocations`) carry a `trace_id`.
+
+- **Changed: `fnai-mcp` is now a thin bridge to the hosted MCP server.** It no longer carries its own copy of the tools, so it has all of them (including the experiment tools, `handoff` and `patch_draft`) and can never drift from the hosted server again. Same command and the same `FNAI_TOKEN` / `FNAI_BASE_URL`. Changes made through it are recorded as coming from an AI tool (`mcp`), not from an SDK script, and on an Enterprise plan they need the same elevation as an OAuth connection. Claude Code can also skip the bridge and connect to the hosted URL directly: `claude mcp add --transport http fnai <base url>/mcp --header "Authorization: Bearer fnp_..."`.
+
 ## 0.8.0 — 2026-10-22
 
 - **Changed: deploying takes a model.** A function saved by the builder, `load_yaml` or the AI tools names no model, and production calls used to quietly run on the mock. Now `fn.deploy("note", model="gpt-4o-mini")` and `c.deployments.deploy(fn_id, version_id, model="gpt-4o-mini", temperature=0.2)` choose the model the deployment serves with. Without one the space's default model is used, and with neither the deploy is refused. `fn deploy <fn> <version> --model gpt-4o-mini` does the same.

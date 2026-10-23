@@ -249,3 +249,36 @@ function jsonResponse(status, body) {
 }
 
 console.log("\nAll FunctionDraft tests passed.");
+
+// ── FNA-REQ-416: a script can be run again; a save of what is already there changes nothing ──
+{
+  const logs = [];
+  const realLog = console.log;
+  console.log = (...a) => { logs.push(a.join(" ")); };
+  const calls = fakeFetch((url, opts) => {
+    if (url.startsWith(`${BASE}/api/functions?`) && opts.method === "GET") return jsonResponse(200, [{ id: 60, slug: "invoice_extractor", archived: false }]);
+    if (url === `${BASE}/api/functions/60` && opts.method === "GET") return jsonResponse(200, { id: 60, slug: "invoice_extractor", name: "Invoice Extractor",
+      input_schema: { type: "object", properties: { document: { type: "string" } }, required: ["document"] },
+      output_schema: { type: "object", properties: { total: { type: "number" } }, required: ["total"] } });
+    if (url === `${BASE}/api/functions/60/submit` && opts.method === "POST") {
+      return jsonResponse(200, { id: 500, number: 3, status: "approved", snapshot: {}, unchanged: true });
+    }
+    if (url === `${BASE}/api/functions/60/versions` && opts.method === "GET") return jsonResponse(200, []);
+    if (url === `${BASE}/api/tools` && opts.method === "GET") return jsonResponse(200, [{ name: "ocr", status: "active" }]);
+    throw new Error(`unexpected request: ${opts.method} ${url}`);
+  });
+  const client = new Client({ token: "fnp_x", baseUrl: BASE });
+  await assert.rejects(() => client.draft({ name: "Invoice Extractor" }), /already exists/);          // the default is unchanged
+  await assert.rejects(() => client.draft({ name: "Invoice Extractor", existing: "maybe" }), /existing must be/);
+  const draft = await client.draft({ name: "Invoice Extractor", existing: "continue" });
+  assert.equal(draft.id, 60);
+  draft.addOutput("total", { type: "number", required: true });
+  draft.addStep("Extract the total.");
+  const v = await draft.submit();
+  console.log = realLog;
+  assert.equal(v.number, 3);
+  assert.equal("unchanged" in v, false);
+  assert.ok(logs.some((l) => l.includes("No changes: v3 is unchanged.")));
+  assert.ok(!calls.some((c) => c.method === "POST" && c.url === `${BASE}/api/functions`));          // not created again
+  console.log("OK: existing: \"continue\" carries on with the function, and an unchanged save says so");
+}

@@ -41,7 +41,7 @@ import (
 var nonAlnumRe = regexp.MustCompile(`[^a-z0-9]+`)
 
 // Version is the client version.
-const Version = "0.8.0"
+const Version = "0.9.0"
 
 const defaultTimeout = 90 * time.Second // server caps execution at 60s
 
@@ -353,6 +353,9 @@ type VersionOut struct {
 	Snapshot     map[string]any `json:"snapshot"`
 	InputSchema  map[string]any `json:"input_schema"`
 	OutputSchema map[string]any `json:"output_schema"`
+	// Unchanged is true when a save sent what the latest version already holds: nothing was written and that
+	// version came back as it was.
+	Unchanged bool `json:"unchanged,omitempty"`
 }
 
 type DeploymentOut struct {
@@ -406,9 +409,12 @@ type HealthOut struct {
 }
 
 type TraceSummary struct {
+	ID        int     `json:"id"` // the paging cursor: pass the last one seen as TraceFilter.BeforeID
 	TraceID   string  `json:"trace_id"`
 	Source    string  `json:"source"`
 	Success   bool    `json:"success"`
+	Status    string  `json:"status,omitempty"`
+	Reason    string  `json:"reason,omitempty"`
 	Model     string  `json:"model"`
 	Cost      float64 `json:"cost"`
 	LatencyMS int     `json:"latency_ms"`
@@ -888,6 +894,47 @@ func (s *TracesService) List(fnID int, source string, limit int) ([]TraceSummary
 	if limit > 0 {
 		q.Set("limit", strconv.Itoa(limit))
 	}
+	var out []TraceSummary
+	return out, s.h.do("GET", "/api/traces", nil, q, &out)
+}
+
+// TraceFilter narrows and pages a trace list. Every field is optional. To page, set BeforeID to the ID of the last
+// trace you have; Tool keeps traces whose steps include that tool; Since/Until are ISO times.
+type TraceFilter struct {
+	FunctionID int
+	Source     string
+	Limit      int
+	BeforeID   int
+	Status     string // success, partial, failed, escalated
+	Model      string
+	Tool       string
+	Since      string
+	Until      string
+}
+
+// ListFiltered is List with paging and filters.
+func (s *TracesService) ListFiltered(f TraceFilter) ([]TraceSummary, error) {
+	q := url.Values{}
+	set := func(k, v string) {
+		if v != "" {
+			q.Set(k, v)
+		}
+	}
+	if f.FunctionID > 0 {
+		q.Set("function_id", strconv.Itoa(f.FunctionID))
+	}
+	if f.Limit > 0 {
+		q.Set("limit", strconv.Itoa(f.Limit))
+	}
+	if f.BeforeID > 0 {
+		q.Set("before_id", strconv.Itoa(f.BeforeID))
+	}
+	set("source", f.Source)
+	set("status", f.Status)
+	set("model", f.Model)
+	set("tool", f.Tool)
+	set("since", f.Since)
+	set("until", f.Until)
 	var out []TraceSummary
 	return out, s.h.do("GET", "/api/traces", nil, q, &out)
 }

@@ -41,7 +41,7 @@ export { DefinitionError };
 
 type S = components["schemas"];
 
-export const VERSION = "0.8.0";
+export const VERSION = "0.9.0";
 const DEFAULT_TIMEOUT_MS = 90_000; // server caps execution at 60s; transport headroom
 
 export class FnaiError extends Error {
@@ -839,6 +839,9 @@ class Datasets {
     return this.h.request("GET", `/api/datasets/${dsId}/rows`);
   }
 
+  /** Add one row. `tool_mocks` is what each of an agent's tools should PRETEND to answer for this row when an
+   *  experiment runs with `tool_mode: "mocked"`: a plain value is the answer every time, `{ sequence: [...] }`
+   *  is one answer per call (the last repeats), `{ error: "..." }` makes the tool fail. */
   addRow(dsId: number, row: S["RowIn"]): Promise<S["RowOut"]> {
     requireId(dsId, "dsId");
     // RowIn (backend/app/schemas.py): input is required with no default;
@@ -1098,11 +1101,17 @@ class Keys {
 class Traces {
   constructor(private h: Http) {}
 
-  list(opts: { functionId?: number; source?: string; limit?: number } = {}):
+  /** Newest first. To page, pass the `id` of the last trace you have as `beforeId`. Filters combine: `status`
+   *  (success, partial, failed, escalated), `success`, `model`, `tool` (traces whose steps include that tool),
+   *  and `since` / `until` (ISO times). */
+  list(opts: { functionId?: number; source?: string; limit?: number; beforeId?: number; status?: string;
+               success?: boolean; model?: string; tool?: string; since?: string; until?: string } = {}):
       Promise<S["TraceSummaryOut"][]> {
     if (opts.functionId !== undefined) requireId(opts.functionId, "functionId");
     return this.h.request("GET", "/api/traces", undefined, {
-      function_id: opts.functionId, source: opts.source, limit: opts.limit ?? 50,
+      function_id: opts.functionId, source: opts.source, limit: opts.limit ?? 50, before_id: opts.beforeId,
+      status: opts.status, success: opts.success, model: opts.model, tool: opts.tool,
+      since: opts.since, until: opts.until,
     });
   }
 
@@ -1207,6 +1216,9 @@ export interface DraftOptions {
   saveTo?: string | false;
   /** A folder for draft files. The Client option of the same name sets this for you. */
   draftsFolder?: string;
+  /** "error" (default) refuses a name that is taken. "continue" makes the same script safe to run again: if the
+   *  function already exists you carry on with it, and a save of an unchanged definition changes nothing. */
+  existing?: "error" | "continue";
 }
 
 /** JSON with sorted keys, so two equal values compare equal as text. */
@@ -1384,6 +1396,30 @@ export class FunctionDraft extends YamlView {
     const slug = opts.slug ?? slugify(opts.name);
     const all = await h.request<Json[]>("GET", "/api/functions", undefined, { include_archived: "true" });
     const taken = (all ?? []).find((f) => f.slug === slug);
+    if (opts.existing !== undefined && opts.existing !== "error" && opts.existing !== "continue") {
+      throw new Error('existing must be "error" (refuse a taken name) or "continue" (carry on with it).');
+    }
+    if (taken && opts.existing === "continue" && !taken.archived) {
+      const existingFn = await h.request<Json>("GET", `/api/functions/${taken.id}`);
+      // only who the function is: its CURRENT fields are not carried in, because the script defines them afresh
+      const fn: Json = { slug: existingFn.slug ?? slug, name: existingFn.name ?? opts.name,
+                         description: opts.description ?? (existingFn.description as string) ?? "" };
+      const draft = new FunctionDraft(h, fn);
+      draft.id = taken.id as number;          // the function exists: the first submit() will not create it
+      draft.setDraftPath(opts);
+      // compare against the latest version, so submit() can list what the script changes
+      const versions = (await h.request<Json[]>("GET", `/api/functions/${taken.id}/versions`)) ?? [];
+      if (versions.length) {
+        const latest = versions.reduce((a, b) => ((b.number as number) > (a.number as number) ? b : a));
+        try {
+          const probe = new FunctionDraft(h, fn);
+          probe.applyVersion(latest);
+          draft.baseline = probe.outline();
+        } catch { /* an older-format version: no list to show, the save still works */ }
+      }
+      draft.autosave();
+      return draft;
+    }
     if (taken) {
       throw new Error(`a function with slug ${JSON.stringify(slug)} already exists${taken.archived ? " (archived)" : ""} ` +
         `(id=${taken.id}) — pick another name (or slug: ...), or carry on with that one using client.loadDraft(${taken.id}).`);
@@ -2021,6 +2057,24 @@ export class FunctionDraft extends YamlView {
     await this.ensureCreated();
     const working = this.draftPath;      // the file you were working in, before a save changes what you are editing
     const body = { snapshot: this.snapshot(), message, input_schema: this.inputSchema, output_schema: this.outputSchema };
+    // a save of what the version already holds sends nothing. (An explicit newVersion: true still always makes
+    // a new version: that is what it asks for.)
+    const held = newVersion ? null : (this.target ?? this.base);
+    if (held && stableJson(held.snapshot) === stableJson(body.snapshot)
+        && stableJson(held.input_schema) === stableJson(body.input_schema)
+        && stableJson(held.output_schema) === stableJson(body.output_schema)) {
+      console.log(`No changes: v${held.number} is unchanged.`);
+      this.lastVersion = held as unknown as S["VersionOut"];
+      this.baseline = this.outline();
+      return this.lastVersion;
+    }
+    if (!this.fresh) {                    // a fresh draft already listed its changes above
+      const shown = this.changes();
+      if (shown.length) {
+        console.log("Changes from the version you started from:");
+        for (const line of shown) console.log("  " + line);
+      }
+    }
     let version: S["VersionOut"];
     if (newVersion) {
       // branch: always a NEW version; the one it grew from is left untouched
@@ -2048,7 +2102,10 @@ export class FunctionDraft extends YamlView {
       this.target = version as unknown as Json;      // it is a draft now: later saves update it
       this.base = null;
     } else {
-      version = await this.h.request<S["VersionOut"]>("POST", `/api/functions/${this.id}/submit`, body);
+      const saved = await this.h.request<S["VersionSubmitOut"]>("POST", `/api/functions/${this.id}/submit`, body);
+      const { unchanged, ...rest } = saved;
+      if (unchanged) console.log(`No changes: v${saved.number} is unchanged.`);
+      version = rest as S["VersionOut"];
     }
     this.lastVersion = version;
     this.fresh = false;                   // saved: later plain saves update the new draft

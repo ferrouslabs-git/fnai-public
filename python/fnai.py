@@ -53,7 +53,7 @@ import warnings
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-__version__ = "0.8.0"
+__version__ = "0.9.0"
 DEFAULT_TIMEOUT_S = 90  # server caps execution at 60s; headroom for transport
 
 
@@ -601,6 +601,9 @@ class _Experiments:
         return self._h("GET", f"/api/experiments/{exp_id}")
 
     def create(self, fn_id: int, **pins: Any) -> dict:
+        """Create an experiment. Pins include `version_ids`, `snapshot_id`, `score_ids`, `models`, `repeats`, and
+        `tool_mode`: "real" (the default, the agent's tools really run) or "mocked" (no tool runs; each answers
+        from the dataset row's `tool_mocks`, and a tool with no pretend answer fails)."""
         _require_id(fn_id, "fn_id")
         # ExperimentCreate (backend/app/schemas.py) requires version_ids — a
         # plan_id-only or single_input-only pin still needs SOME version to
@@ -816,6 +819,11 @@ class _Datasets:
         return self._h("GET", f"/api/datasets/{ds_id}/rows")
 
     def add_row(self, ds_id: int, **row: Any) -> dict:
+        """Add one row: `input` (required), `expected`, `tags`, and `tool_mocks`, what each of an agent's tools
+        should PRETEND to answer for this row when an experiment runs with `tool_mode="mocked"`:
+        `{"lookup": {"status": "paid"}, "refund": {"sequence": [{"ok": True}, {"error": "already refunded"}]}}`.
+        A plain value is the answer every time, `{"sequence": [...]}` is one answer per call (the last repeats),
+        `{"error": "..."}` makes the tool fail."""
         _require_id(ds_id, "ds_id")
         # RowIn (backend/app/schemas.py): input is required with no default;
         # expected/tags/source all have defaults, so only this one is worth
@@ -1056,11 +1064,18 @@ class _Traces:
         self._h = http
 
     def list(self, function_id: int | None = None, source: str | None = None,
-             limit: int = 50) -> list[dict]:
+             limit: int = 50, *, before_id: int | None = None, status: str | None = None,
+             success: bool | None = None, model: str | None = None, tool: str | None = None,
+             since: str | None = None, until: str | None = None) -> list[dict]:
+        """Newest first. To page, pass the `id` of the last trace you have as `before_id`. Filters combine:
+        `status` (success, partial, failed, escalated), `success`, `model`, `tool` (traces whose steps include that
+        tool), and `since` / `until` (ISO times)."""
         if function_id is not None:
             _require_id(function_id, "function_id")
-        return self._h("GET", "/api/traces",
-                       query={"function_id": function_id, "source": source, "limit": limit})
+        return self._h("GET", "/api/traces", query={
+            "function_id": function_id, "source": source, "limit": limit, "before_id": before_id,
+            "status": status, "success": None if success is None else str(success).lower(),
+            "model": model, "tool": tool, "since": since, "until": until})
 
     def get(self, trace_id: str) -> dict:
         _require(trace_id, "trace_id")
@@ -1732,15 +1747,44 @@ class FunctionDraft(_FunctionYaml):
     @classmethod
     def create(cls, http: _Http, *, name: str, slug: str | None = None,
                description: str = "", save_to: Any = None,
-               drafts_folder: Any = None) -> "FunctionDraft":
+               drafts_folder: Any = None, existing: str = "error") -> "FunctionDraft":
         """Start a new function on your computer. Nothing is created on the
         server until submit(): the one thing done here is a read-only check
         that the name is free (archived functions keep their name, so they
-        count). While you build, the draft file is kept up to date."""
+        count). While you build, the draft file is kept up to date.
+
+        existing="continue" makes the same script safe to run again: if the function
+        already exists you carry on with it instead of getting an error. What your
+        script defines is compared with the latest version when you submit(): the
+        same definition changes nothing ("No changes: v3 is unchanged"), a different
+        one updates the draft or starts the next version."""
         _require(name, "name")
+        if existing not in ("error", "continue"):
+            raise ValueError('existing must be "error" (refuse a taken name) or "continue" (carry on with it).')
         slug = slug or _slugify(name)
         taken = next((f for f in http("GET", "/api/functions", query={"include_archived": "true"}) or []
                       if f.get("slug") == slug), None)
+        if taken is not None and existing == "continue" and not taken.get("archived"):
+            existing_fn = http("GET", f"/api/functions/{taken['id']}")
+            # only who the function is: its CURRENT fields are not carried in, because the script defines them afresh
+            # (carrying them in would make `add_input("topic")` fail as "already defined" on the second run)
+            fn = {"slug": existing_fn.get("slug", slug), "name": existing_fn.get("name", name),
+                  "description": description or existing_fn.get("description") or ""}
+            draft = cls(http, fn)
+            draft.id = taken["id"]                    # the function exists: the first submit() will not create it
+            draft._set_draft_path(save_to, drafts_folder)
+            # compare against the latest version, so submit() can list what the script changes
+            versions = http("GET", f"/api/functions/{taken['id']}/versions") or []
+            if versions:
+                latest = max(versions, key=lambda v: v["number"])
+                try:
+                    probe = cls(http, fn)
+                    probe._apply_version(latest)
+                    draft._baseline = probe._outline()
+                except DefinitionError:
+                    pass                                # an older-format version: no list to show, the save still works
+            draft._autosave()
+            return draft
         if taken is not None:
             state = " (archived)" if taken.get("archived") else ""
             raise ValueError(
@@ -2353,6 +2397,20 @@ class FunctionDraft(_FunctionYaml):
         working = self._draft_path          # the file you were working in, before a save changes what you are editing
         body = {"snapshot": self._snapshot(), "message": message,
                 "input_schema": self._input_schema, "output_schema": self._output_schema}
+        # FNA-REQ-416: a save of what the version already holds sends nothing. (An explicit new_version=True still
+        # always makes a new version: that is what it asks for.)
+        held = None if new_version else (self._target or self._base)
+        if held is not None and self._same_as(held, body):
+            print(f"No changes: v{held['number']} is unchanged.")
+            self.last_version = held
+            self._baseline = self._outline()
+            return held
+        if not self._fresh:                  # a fresh draft already listed its changes above
+            shown = self.changes()
+            if shown:
+                print("Changes from the version you started from:")
+                for line in shown:
+                    print("  " + line)
         if new_version:
             # branch: always a NEW version; the one it grew from is left untouched
             parent = self._target or self._base or self.last_version
@@ -2376,11 +2434,22 @@ class FunctionDraft(_FunctionYaml):
             self._target, self._base = version, None       # it is a draft now: later saves update it
         else:
             version = self._h("POST", f"/api/functions/{self.id}/submit", body)
+            if isinstance(version, dict) and version.pop("unchanged", False):
+                print(f"No changes: v{version['number']} is unchanged.")
         self.last_version = version
         self._fresh = False                 # saved: later plain saves update the new draft
         self._baseline = self._outline()
         self._finish_save(working, version)     # the draft file becomes this version's copy
         return version
+
+    @staticmethod
+    def _same_as(version: dict, body: dict) -> bool:
+        """Is what a save would send identical to this version's content? The message is not content."""
+        def canon(x: Any) -> str:
+            return json.dumps(x, sort_keys=True, default=str)
+        return (canon(version.get("snapshot")) == canon(body.get("snapshot"))
+                and canon(version.get("input_schema")) == canon(body.get("input_schema"))
+                and canon(version.get("output_schema")) == canon(body.get("output_schema")))
 
     def deploy(self, note: str = "", *, model: Optional[str] = None,
                temperature: Optional[float] = None) -> dict:
@@ -2426,12 +2495,16 @@ class Client:
         return self._http("GET", "/api/me")
 
     def draft(self, *, name: str, slug: str | None = None, description: str = "",
-              save_to: Any = None) -> "FunctionDraft":
+              save_to: Any = None, existing: str = "error") -> "FunctionDraft":
         """Start building a function through the shared create/add_*/submit/
         deploy flow (FUNCTION_CLASS_DESIGN.md) — the same actions the canvas
-        UI performs. See FunctionDraft for the full method list."""
+        UI performs. See FunctionDraft for the full method list.
+
+        Pass existing="continue" to make the script safe to run again: if the function
+        already exists you carry on with it instead of getting an error, and a save of
+        an unchanged definition changes nothing."""
         return FunctionDraft.create(self._http, name=name, slug=slug, description=description,
-                                    save_to=save_to, drafts_folder=self._drafts_folder)
+                                    save_to=save_to, drafts_folder=self._drafts_folder, existing=existing)
 
     def load_draft(self, fn_id: "int | str", *, version: int | None = None,
                    save_to: Any = None, fresh: bool = False) -> "FunctionDraft":

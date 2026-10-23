@@ -644,6 +644,187 @@ class FunctionDraftTests(unittest.TestCase):
         _Models(h).list()
         self.assertEqual(h.calls[-1][:2], ("GET", "/api/models"))
 
+    def test_traces_list_sends_the_paging_and_filter_options_and_omits_the_rest(self):
+        from fnai import _Traces
+        seen = {}
+
+        def http(method, path, body=None, query=None):
+            seen.update(method=method, path=path, query=query)
+            return []
+        _Traces(http).list(7, before_id=42, status="partial", success=False, tool="echo", since="2026-10-01T00:00:00Z")
+        self.assertEqual((seen["method"], seen["path"]), ("GET", "/api/traces"))
+        self.assertEqual({k: v for k, v in seen["query"].items() if v is not None},
+                         {"function_id": 7, "limit": 50, "before_id": 42, "status": "partial", "success": "false",
+                          "tool": "echo", "since": "2026-10-01T00:00:00Z"})
+
+    def test_a_row_and_an_experiment_pass_tool_mocks_and_tool_mode_through(self):
+        from fnai import _Datasets, _Experiments
+        seen = []
+
+        def http(method, path, body=None, query=None):
+            seen.append((method, path, body))
+            return {}
+        _Datasets(http).add_row(5, input={"q": "a"}, tool_mocks={"lookup": {"s": 1}})
+        _Experiments(http).create(3, version_ids=[1], snapshot_id=2, tool_mode="mocked")
+        self.assertEqual(seen[0][2], {"input": {"q": "a"}, "tool_mocks": {"lookup": {"s": 1}}})
+        self.assertEqual(seen[1][2]["tool_mode"], "mocked")
+
+    # ── FNA-REQ-416: rerunnable scripts, and a save of what is already there sends nothing ──
+
+    def test_existing_continue_carries_on_with_a_function_that_already_exists(self):
+        http = _FakeDraftHttp()
+        http.listed = [{"id": 60, "slug": "invoice_extractor", "archived": False}]
+        with self.assertRaises(ValueError):                                   # the default is unchanged: refuse
+            FunctionDraft.create(http, name="Invoice Extractor")
+        draft = FunctionDraft.create(http, name="Invoice Extractor", existing="continue")
+        self.assertEqual(draft.id, 60)
+        draft.add_output("total", type="number")
+        draft.add_step("Extract the total.")
+        draft.submit()
+        self.assertFalse([c for c in http.calls if c[:2] == ("POST", "/api/functions")])     # it did not create it again
+        self.assertTrue([c for c in http.calls if c[:2] == ("POST", "/api/functions/60/submit")])
+
+    def test_existing_continue_does_not_carry_the_functions_current_fields_into_the_script(self):
+        # found live: the function's own schemas hold the fields from the first run, so the script's add_input failed
+        # with "already defined" the second time
+        http = _FakeDraftHttp(fn={"id": 60, "slug": "invoice_extractor", "name": "Invoice Extractor",
+                                  "input_schema": {"type": "object", "properties": {"topic": {"type": "string"}}, "required": ["topic"]},
+                                  "output_schema": {"type": "object", "properties": {"total": {"type": "number"}}, "required": ["total"]}})
+        http.listed = [{"id": 60, "slug": "invoice_extractor", "archived": False}]
+        draft = FunctionDraft.create(http, name="Invoice Extractor", existing="continue")
+        draft.add_input("topic", type="string", required=True)       # must not raise
+        draft.add_output("total", type="number", required=True)
+        draft.add_step("Extract the total.")
+        draft.submit()
+
+    def _first_run_then_listed(self, http):
+        built = FunctionDraft.create(http, name="Invoice Extractor")
+        built.add_input("document", type="string", required=True)
+        built.add_output("total", type="number", required=True)
+        built.add_step("Extract the total.")
+        built.submit()
+        body = [c for c in http.calls if c[1].endswith("/submit")][-1][2]
+        http.versions[-1].update({"input_schema": body["input_schema"], "output_schema": body["output_schema"]})
+        http.listed = [{"id": 60, "slug": "invoice_extractor", "archived": False}]
+
+    def _script(self, http, extra=None):
+        import contextlib
+        import io
+        d = FunctionDraft.create(http, name="Invoice Extractor", existing="continue")
+        d.add_input("document", type="string", required=True)
+        d.add_output("total", type="number", required=True)
+        d.add_step("Extract the total.")
+        if extra:
+            d.add_step(extra)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            d.submit("again")
+        return out.getvalue()
+
+    def test_a_rerun_that_changes_something_lists_what_changed_before_it_saves(self):
+        http = _FakeDraftHttp()
+        self._first_run_then_listed(http)
+        shown = self._script(http, extra="Also check the date.")
+        self.assertIn("Changes from the version you started from:", shown)
+        self.assertTrue(any(line.startswith("  ") and line.strip()[0] in "+-~" for line in shown.splitlines()), shown)
+
+    def test_a_rerun_that_changes_nothing_lists_no_changes(self):
+        http = _FakeDraftHttp()
+        self._first_run_then_listed(http)
+        shown = self._script(http)
+        self.assertNotIn("Changes from the version you started from:", shown)
+
+    def test_a_loaded_version_with_an_edit_lists_the_change_then_saves(self):
+        import contextlib
+        import io
+        http = _FakeDraftHttp()
+        self._first_run_then_listed(http)
+        loaded = FunctionDraft.load(http, http.fn["id"], version=1)
+        loaded.add_step("Also check the date.")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            loaded.submit()
+        self.assertIn("Changes from the version you started from:", out.getvalue())
+
+    def test_existing_continue_does_not_hide_an_archived_name_and_rejects_unknown_values(self):
+        http = _FakeDraftHttp()
+        http.listed = [{"id": 60, "slug": "invoice_extractor", "archived": True}]
+        with self.assertRaises(ValueError):
+            FunctionDraft.create(http, name="Invoice Extractor", existing="continue")
+        with self.assertRaises(ValueError):
+            FunctionDraft.create(http, name="Invoice Extractor", existing="maybe")
+
+    def test_a_save_the_server_calls_unchanged_prints_so_and_returns_that_version(self):
+        import contextlib
+        import io
+        http = _FakeDraftHttp()
+        http.listed = [{"id": 60, "slug": "invoice_extractor", "archived": False}]
+        orig = http.__call__
+
+        class _Same(_FakeDraftHttp):
+            def __call__(self_, method, path, body=None, query=None):
+                if method == "POST" and path.endswith("/submit"):
+                    self_.calls.append((method, path, body))
+                    return {"id": 7, "number": 3, "status": "approved", "snapshot": body["snapshot"], "unchanged": True}
+                return super().__call__(method, path, body, query)
+        same = _Same()
+        same.listed = http.listed
+        draft = FunctionDraft.create(same, name="Invoice Extractor", existing="continue")
+        draft.add_output("total", type="number")
+        draft.add_step("Extract the total.")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            v = draft.submit()
+        self.assertIn("No changes: v3 is unchanged.", out.getvalue())
+        self.assertEqual(v["id"], 7)
+        self.assertNotIn("unchanged", v)
+
+    def test_a_loaded_version_saved_with_no_edits_sends_nothing(self):
+        import contextlib
+        import io
+        http = _FakeDraftHttp()
+        built = FunctionDraft.create(http, name="Invoice Extractor")
+        built.add_output("total", type="number")
+        built.add_step("Extract the total.")
+        built.submit()
+        body = [c for c in http.calls if c[1].endswith("/submit")][-1][2]
+        http.versions[-1].update({"input_schema": body["input_schema"], "output_schema": body["output_schema"]})
+        loaded = FunctionDraft.load(http, http.fn["id"], version=1)
+        before = len(http.calls)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            v = loaded.submit(message="same again")
+        self.assertIn("No changes: v1 is unchanged.", out.getvalue())
+        self.assertEqual(v["id"], http.versions[-1]["id"])
+        self.assertEqual(len(http.calls), before)                              # nothing was sent at all
+        self.assertEqual(len(http.versions), 1)
+
+    def test_one_real_edit_to_a_loaded_version_still_saves(self):
+        http = _FakeDraftHttp()
+        built = FunctionDraft.create(http, name="Invoice Extractor")
+        built.add_output("total", type="number")
+        built.add_step("Extract the total.")
+        built.submit()
+        body = [c for c in http.calls if c[1].endswith("/submit")][-1][2]
+        http.versions[-1].update({"input_schema": body["input_schema"], "output_schema": body["output_schema"]})
+        loaded = FunctionDraft.load(http, http.fn["id"], version=1)
+        loaded.add_step("Also check the date.")
+        before = len(http.calls)
+        loaded.submit()
+        self.assertGreater(len(http.calls), before)
+
+    def test_new_version_true_still_always_makes_a_new_version(self):
+        http = _FakeDraftHttp()
+        built = FunctionDraft.create(http, name="Invoice Extractor")
+        built.add_output("total", type="number")
+        built.add_step("Extract the total.")
+        built.submit()
+        body = [c for c in http.calls if c[1].endswith("/submit")][-1][2]
+        http.versions[-1].update({"input_schema": body["input_schema"], "output_schema": body["output_schema"]})
+        loaded = FunctionDraft.load(http, http.fn["id"])
+        v = loaded.submit(new_version=True)
+        self.assertEqual(v["number"], 2)
+
     def test_deploy_before_any_submit_raises(self):
         http = _FakeDraftHttp()
         draft = FunctionDraft.create(http, name="Invoice Extractor")

@@ -1454,6 +1454,9 @@ func (d *FunctionDraft) submit(message string, asNew bool) (*VersionOut, error) 
 		}
 	default:
 		err = d.h.do("POST", "/api/functions/"+strconv.Itoa(d.ID)+"/submit", body, nil, &out)
+		if err == nil && out.Unchanged {
+			fmt.Fprintf(changesOut, "No changes: v%d is unchanged.\n", out.Number)
+		}
 	}
 	if err != nil {
 		return nil, err
