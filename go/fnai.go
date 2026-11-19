@@ -41,7 +41,7 @@ import (
 var nonAlnumRe = regexp.MustCompile(`[^a-z0-9]+`)
 
 // Version is the client version.
-const Version = "0.9.0"
+const Version = "0.11.0"
 
 const defaultTimeout = 90 * time.Second // server caps execution at 60s
 
@@ -212,7 +212,11 @@ func (h *httpClient) do(method, path string, body any, query url.Values, out any
 // Option configures a Client or Function.
 type Option func(*httpClient)
 
-// WithBaseURL points the client at a deployment (default http://localhost:8000).
+// DefaultBaseURL is UAT until production (https://app.fnai.dev) launches; the
+// default switches then (FNA-REQ-461). Point elsewhere with FNAI_BASE_URL or WithBaseURL.
+const DefaultBaseURL = "https://uat.fnai.dev"
+
+// WithBaseURL points the client at a deployment (default DefaultBaseURL).
 // WithDraftsFolder says where draft files (the YAML a FunctionDraft keeps up to date on your computer)
 // go. Without it they go to $FNAI_DRAFTS_DIR, else .fnai/drafts next to where the program runs.
 func WithDraftsFolder(dir string) Option {
@@ -240,10 +244,15 @@ func WithTimeout(d time.Duration) Option {
 }
 
 func newHTTP(token string, opts []Option) *httpClient {
-	h := &httpClient{base: "http://localhost:8000", token: token,
+	h := &httpClient{base: DefaultBaseURL, token: token,
 		hc: &http.Client{Timeout: defaultTimeout}}
 	for _, o := range opts {
 		o(h)
+	}
+	if h.base == DefaultBaseURL {
+		if env := os.Getenv("FNAI_BASE_URL"); env != "" {
+			h.base = strings.TrimRight(env, "/")
+		}
 	}
 	return h
 }
@@ -258,7 +267,13 @@ type RunMeta struct {
 	TokensIn  int     `json:"tokens_in"`
 	TokensOut int     `json:"tokens_out"`
 	TraceID   string  `json:"trace_id"`
+	// FundedBy says whose provider key paid for the call (FNA-REQ-477): "own" (your organization's key),
+	// "functional_ai" (Functional AI's key, because your organization chose it), or nil (a test model that uses no key).
+	FundedBy *string `json:"funded_by"`
 }
+
+// FundedByFunctionalAI reports whether the call ran on Functional AI's key rather than one of your own.
+func (m RunMeta) FundedByFunctionalAI() bool { return m.FundedBy != nil && *m.FundedBy == "functional_ai" }
 
 // RunResult is one execution. An execution failure is NOT a Go error —
 // check OK()/Status; Error holds the execution error text when failed.
@@ -722,6 +737,7 @@ func (s *ScoresService) List(fnID int) ([]ScoreOut, error) {
 
 // EvalService groups the evaluation loop: Plans, Experiments, Scores.
 type EvalService struct {
+	h           *httpClient
 	Plans       *PlansService
 	Experiments *ExperimentsService
 	Scores      *ScoresService
@@ -1046,7 +1062,7 @@ func NewClient(token string, opts ...Option) *Client {
 		Functions: &FunctionsService{h},
 		Spaces:    &SpacesService{h},
 		Versions:  &VersionsService{h},
-		Eval: &EvalService{Plans: &PlansService{h},
+		Eval: &EvalService{h: h, Plans: &PlansService{h},
 			Experiments: &ExperimentsService{h}, Scores: &ScoresService{h}},
 		Datasets:    &DatasetsService{h},
 		Deployments: &DeploymentsService{h},

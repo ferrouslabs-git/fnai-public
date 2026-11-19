@@ -40,7 +40,7 @@ except ImportError as exc:  # pragma: no cover - exercised only without the extr
         'pip install "fnai[mcp] @ git+https://github.com/ferrouslabs-git/fnai-public.git#subdirectory=python"'
     ) from exc
 
-from fnai import __version__
+from fnai import DEFAULT_BASE_URL, __version__
 
 PROTOCOL_VERSION = "2025-03-26"
 TIMEOUT_S = 120
@@ -121,7 +121,7 @@ def get_remote() -> HostedMcp:
         if not token:
             raise RuntimeError("FNAI_TOKEN is not set. Mint one from your avatar menu -> API tokens, "
                                "then: export FNAI_TOKEN=fnp_...")
-        _remote = HostedMcp(os.environ.get("FNAI_BASE_URL", "http://localhost:8000"), token)
+        _remote = HostedMcp(os.environ.get("FNAI_BASE_URL", DEFAULT_BASE_URL), token)
     return _remote
 
 

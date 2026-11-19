@@ -103,4 +103,4 @@ receipt, err := fn.ReportTrace(map[string]any{
 // receipt.TraceID, receipt.Duplicate — sending the same trace_id again is harmless
 ```
 
-It shows in the monitor next to hosted calls. See `docs/self-hosted-traces.md`.
+It shows in the monitor next to hosted calls. See [self-hosted-traces.md](../docs/self-hosted-traces.md).

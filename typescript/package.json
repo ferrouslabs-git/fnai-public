@@ -1,6 +1,6 @@
 {
   "name": "fnai",
-  "version": "0.9.0",
+  "version": "0.11.0",
   "description": "TypeScript client for functionalAI \u2014 invoke deployed functions and drive the management API",
   "license": "Apache-2.0",
   "type": "module",
@@ -16,7 +16,7 @@
   "scripts": {
     "build": "tsc",
     "check": "tsc --noEmit",
-    "test": "npm run build && node test-yaml-endpoints.mjs && node test-function-draft.mjs && node test-builder.mjs && node test-report-trace.mjs"
+    "test": "npm run build && node test-yaml-endpoints.mjs && node test-function-draft.mjs && node test-builder.mjs && node test-report-trace.mjs && node test-tracing.mjs && node test-eval.mjs && node test-prompts.mjs"
   },
   "repository": {
     "type": "git",

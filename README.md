@@ -21,6 +21,9 @@ Namespaces (identical across languages): `functions` · `versions` ·
 `eval.plans` / `eval.experiments` / `eval.scores` · `datasets` · `deployments`
 · `keys.provider` / `keys.invoke` · `traces` · `auth.tokens`.
 
+**Testing an AI that runs on your own computers?** Start with the [five-minute quickstart](docs/quickstart.md): trace a call and
+get a scored test run, in Python or TypeScript. The other pages are in [docs/](docs/README.md).
+
 Start with each package's README and `examples/`. New here? The
 [SDK quickstart](https://github.com/ferrouslabs-git/functionalAI/blob/staging/docs/sdk-quickstart.md)
 walks token → install → deployed function in five minutes;

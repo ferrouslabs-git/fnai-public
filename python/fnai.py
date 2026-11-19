@@ -5,8 +5,7 @@ Zero dependencies (stdlib only). Two entry points:
 `Function` — the public runtime surface, keyed by a function invoke key (fnk_*):
     from fnai import Function
 
-    fn = Function("doc_summarizer", api_key="fnk_…",
-                  base_url="http://localhost:8000")
+    fn = Function("doc_summarizer", api_key="fnk_…")
     print(fn.contract()["input_schema"])          # discover the shape
     result = fn.run(document="…long text…")       # invoke
     if result.ok:
@@ -18,7 +17,7 @@ Zero dependencies (stdlib only). Two entry points:
 minted under your avatar → API tokens). Namespaces mirror the API families:
     from fnai import Client
 
-    c = Client(token="fnp_…", base_url="http://localhost:8000")
+    c = Client(token="fnp_…")
     fn = c.functions.create(slug="summarizer", name="Summarizer",
                             input_schema=IN, output_schema=OUT)
     v = c.functions.create_version(fn["id"], snapshot=SNAPSHOT, message="v1")
@@ -35,6 +34,10 @@ Errors: FnaiError carries .status and .detail for API-level failures
 (bad key → 401, unknown/undeployed function → 404, invalid input → 422,
 timeout → 504). An EXECUTION failure is not an exception — the platform
 returns 200 with status="failed"; check result.ok.
+
+The default address is UAT, https://uat.fnai.dev, until production
+(https://app.fnai.dev) launches; the default switches then (FNA-REQ-461).
+Pass base_url, or set FNAI_BASE_URL, to point somewhere else.
 """
 from __future__ import annotations
 
@@ -53,7 +56,15 @@ import warnings
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-__version__ = "0.9.0"
+# UAT until https://app.fnai.dev launches. Then this constant switches (FNA-REQ-461).
+DEFAULT_BASE_URL = "https://uat.fnai.dev"
+
+
+def resolve_base_url(explicit: str | None = None) -> str:
+    """Explicit argument, then FNAI_BASE_URL, then the default."""
+    return explicit or os.environ.get("FNAI_BASE_URL") or DEFAULT_BASE_URL
+
+__version__ = "0.11.0"
 DEFAULT_TIMEOUT_S = 90  # server caps execution at 60s; headroom for transport
 
 
@@ -111,6 +122,41 @@ def _require_id(value: Any, field: str) -> None:
     `isinstance(x, int)` check), never a string someone forgot to convert."""
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise ValueError(f"{field} must be a positive integer id, got {value!r}.")
+
+
+# FNA-REQ-465: every function starts at a step limit of 1. A tool call is a step and so is the final answer, so an
+# agent left at 1 can never use a tool and then answer: each run ends `partial` (guard:steps) with no output.
+# The default stays; we say so, once per function per process, whenever an agent is saved or tried in the playground.
+_STEP_LIMIT_WARNED: set = set()
+
+
+def _is_agent_snapshot(snap: Any) -> bool:
+    """A version's mode, from either snapshot shape (canvas `impl`, or the v2 `implementation.execution.mode`)."""
+    if not isinstance(snap, dict):
+        return False
+    impl = snap.get("implementation")
+    mode = impl.get("execution", {}).get("mode") if isinstance(impl, dict) and isinstance(impl.get("execution"), dict) else None
+    return (mode or snap.get("impl")) == "agent"
+
+
+def _warn_if_agent_at_default_step_limit(http: Any, fn_id: Any, snap: Any) -> None:
+    """Warn (never raise) when an agent function is still at step limit 1. Advice, not a gate: a failed lookup,
+    or a prompt function, says nothing."""
+    if not fn_id or fn_id in _STEP_LIMIT_WARNED or not _is_agent_snapshot(snap):
+        return
+    try:
+        fn = http("GET", f"/api/functions/{fn_id}")
+    except Exception:  # noqa: BLE001 — the warning must never break a save or a run
+        return
+    if not isinstance(fn, dict) or int(fn.get("step_limit") or 1) > 1:
+        return
+    _STEP_LIMIT_WARNED.add(fn_id)
+    top = fn.get("step_limit_max") or 12
+    warnings.warn(
+        f"fnai: this agent can take only 1 step, so it can't use a tool and then answer; every run will end "
+        f"`partial` (guard:steps) with no output. Raise the step limit first: "
+        f"c.functions.update({fn_id}, step_limit=<n>)  (n up to {top}).",
+        stacklevel=3)
 
 
 class _Http:
@@ -234,6 +280,23 @@ class _Http:
             raise FnaiError(0, f"cannot reach {self._base}: {e.reason}") from None
 
 
+# FNA-REQ-477: a call's `meta["funded_by"]` says whose provider key paid: "own" (your organization's key),
+# "functional_ai" (Functional AI's key, because your organization chose it), or None (a test model that uses no key).
+# The first time this process sees "functional_ai" it warns once, with where to set up your own key.
+_FUNDED_BY_WARNED = False
+
+
+def _warn_if_functional_ai(meta: dict, base_url: str, stacklevel: int = 3) -> None:
+    global _FUNDED_BY_WARNED
+    if _FUNDED_BY_WARNED or (meta or {}).get("funded_by") != "functional_ai":
+        return
+    _FUNDED_BY_WARNED = True
+    warnings.warn(
+        "fnai: this call ran on Functional AI's key, not one of your own. To use your own key, set one up under "
+        f"API keys in the app{f' ({base_url})' if base_url else ''}, then choose \"My own key\" for that provider. "
+        "(This warning is shown once per run.)", stacklevel=stacklevel)
+
+
 @dataclass
 class RunResult:
     output: dict[str, Any] | None
@@ -249,14 +312,19 @@ class RunResult:
     def trace_id(self) -> str | None:
         return self.meta.get("trace_id")
 
+    @property
+    def funded_by(self) -> str | None:
+        """Whose key paid for the call: "own", "functional_ai", or None (a test model that uses no key)."""
+        return self.meta.get("funded_by")
+
 
 class Function:
     """A handle on one deployed function (public runtime surface, fnk_* key)."""
 
-    def __init__(self, slug: str, api_key: str, base_url: str = "http://localhost:8000",
+    def __init__(self, slug: str, api_key: str, base_url: str | None = None,
                  timeout: float = DEFAULT_TIMEOUT_S):
         self.slug = slug
-        self._http = _Http(base_url, api_key, timeout)
+        self._http = _Http(resolve_base_url(base_url), api_key, timeout)
 
     def contract(self) -> dict:
         """The ACTIVE deployment's contract: input/output schemas + shapes.
@@ -275,6 +343,7 @@ class Function:
         """Invoke the active deployment. Keyword arguments become the input
         object, validated server-side against the deployed input schema."""
         body = self._http("POST", f"/v1/run/{self.slug}", {"input": input})
+        _warn_if_functional_ai(body.get("meta") or {}, getattr(self._http, "_base", ""))
         return RunResult(output=body.get("output"), status=body.get("status", "failed"),
                          meta=body.get("meta", {}), error=body.get("error"))
 
@@ -302,6 +371,7 @@ class Function:
         when done it is the same result run() would have returned (success / partial / failed / escalated)."""
         _require_id(run_id, "run_id")
         body = self._http("GET", f"/v1/run/{self.slug}/runs/{run_id}")
+        _warn_if_functional_ai(body.get("meta") or {}, getattr(self._http, "_base", ""))
         return RunResult(output=body.get("output"), status=body.get("status", "failed"),
                          meta={**(body.get("meta") or {}), "run_id": body.get("run_id", run_id)},
                          error=body.get("error"))
@@ -527,6 +597,11 @@ class _Versions:
         body: dict[str, Any] = {"input": input, "model": model}
         if temperature is not None:
             body["temperature"] = temperature
+        try:    # FNA-REQ-465: say so before a run that cannot use its tools
+            v = self._h("GET", f"/api/versions/{v_id}")
+            _warn_if_agent_at_default_step_limit(self._h, v.get("function_id"), v.get("snapshot"))
+        except Exception:  # noqa: BLE001
+            pass
         return self._h("POST", f"/api/versions/{v_id}/playground/run", body)
 
     def gate(self, v_id: int) -> dict:
@@ -640,6 +715,27 @@ class _Experiments:
     def findings(self, exp_id: int) -> list[dict]:
         _require_id(exp_id, "exp_id")
         return self._h("GET", f"/api/experiments/{exp_id}/findings")
+
+    def check_results(self, exp_id: int, *, score_id: int | None = None, result: str | None = None,
+                      row: int | None = None, model: str | None = None,
+                      version_id: int | None = None) -> list[dict]:
+        """Which row passed or failed each score, and why: one entry per row x repeat x model x version x score,
+        failures first. Each has `row` (its number in the dataset version, from 1), `input` (sensitive fields
+        hidden), `score_name`, `rule`, `result` ("passed" | "failed" | "not_applicable"), `score`, `feedback` (the
+        check's own explanation) and `trace_id`. Filter with `score_id`, `result`, `row`, `model`, `version_id`.
+        Reads every page for you."""
+        _require_id(exp_id, "exp_id")
+        if result is not None and result not in ("passed", "failed", "not_applicable"):
+            raise ValueError('result must be "passed", "failed" or "not_applicable"')
+        q = {k: v for k, v in {"score_id": score_id, "result": result, "row": row, "model": model,
+                                "version_id": version_id}.items() if v is not None}
+        items: list[dict] = []
+        while True:
+            page = self._h("GET", f"/api/experiments/{exp_id}/check-results",
+                           query={**q, "limit": 500, "offset": len(items)})
+            items += page.get("items") or []
+            if not page.get("items") or len(items) >= page.get("total", 0):
+                return items
 
     def compare(self, exp_ids: list[int]) -> dict:
         """Compare finished experiments side by side — what the Comparisons
@@ -762,6 +858,11 @@ class _Eval:
         self.plans = _Plans(http)
         self.experiments = _Experiments(http)
         self.scores = _Scores(http)
+        self._http = http
+
+    def run(self, function: "int | str", **kw: Any) -> dict:
+        """Run a dataset through your own code and get it scored (FNA-REQ-530). Same as fnai.eval(...)."""
+        return run_eval(self._http, function, **kw)
 
 
 class _Spaces:
@@ -2440,6 +2541,7 @@ class FunctionDraft(_FunctionYaml):
         self._fresh = False                 # saved: later plain saves update the new draft
         self._baseline = self._outline()
         self._finish_save(working, version)     # the draft file becomes this version's copy
+        _warn_if_agent_at_default_step_limit(self._h, self.id, self._snapshot())    # FNA-REQ-465
         return version
 
     @staticmethod
@@ -2471,10 +2573,10 @@ class FunctionDraft(_FunctionYaml):
 class Client:
     """Namespaced management client. Auth: personal access token (fnp_*)."""
 
-    def __init__(self, token: str, base_url: str = "http://localhost:8000",
+    def __init__(self, token: str, base_url: str | None = None,
                  timeout: float = DEFAULT_TIMEOUT_S, drafts_folder: Any = None,
                  versions_folder: Any = None, keep_versions: bool = True):
-        http = _Http(base_url, token, timeout)
+        http = _Http(resolve_base_url(base_url), token, timeout)
         http.versions_folder = versions_folder     # where a copy of every saved version goes
         http.keep_versions = keep_versions         # False: no copies, the draft file is just removed on save
         self._http = http
@@ -2885,3 +2987,704 @@ def create_function(client: Client, *, slug: str, name: str, sections: list,
         client, slug=slug, name=name, sections=sections,
         input_schema=input_schema, output_schema=output_schema,
         model=model, temperature=temperature, extra=extra)
+
+
+# ── tracing: report calls that run on YOUR servers (FNA-REQ-532) ─────────────────────────────────────────────────
+#
+#     import fnai
+#     fnai.init_tracing(api_key="fnk_…")                  # or set FNAI_API_KEY; the key names the function
+#     client = fnai.wrap_openai(OpenAI())                  # every model call becomes an LLM step
+#
+#     @fnai.traced                                         # every call becomes a tool step
+#     def search(query): ...
+#
+#     with fnai.trace(input={"question": q}) as t:         # one call of your agent
+#         t.output({"answer": run_agent(q)})
+#
+# Everything here is fail-open: a problem in tracing (no network, a refused trace, a bug here) is logged and never
+# raises into your code, never slows it down (traces are sent from a background thread) and never changes what it
+# returns. Turning the network off loses traces, nothing else.
+
+import atexit
+import contextvars
+import functools
+import inspect
+import logging
+import queue
+import threading
+
+_tlog = logging.getLogger("fnai.tracing")
+
+_MAX_STEPS = 500                 # the server's limit per trace
+_MAX_TEXT = 20_000               # characters kept of any one string value
+_RETRY_AFTER_S = (0.5, 1.0, 2.0)  # waits between attempts when the network or the server is struggling
+_RETRY_STATUSES = {0, 408, 425, 429}   # plus every 5xx
+
+
+def _jsonable(value: Any, _depth: int = 0) -> Any:
+    """Something json.dumps will accept, whatever you gave: containers are walked, long text is cut, unknown objects
+    become their repr. Never raises."""
+    try:
+        if value is None or isinstance(value, (bool, int, float)):
+            return value
+        if isinstance(value, str):
+            return value if len(value) <= _MAX_TEXT else value[:_MAX_TEXT] + "…[cut]"
+        if _depth > 8:
+            return repr(value)[:200]
+        if isinstance(value, dict):
+            return {str(k): _jsonable(v, _depth + 1) for k, v in list(value.items())[:200]}
+        if isinstance(value, (list, tuple, set, frozenset)):
+            return [_jsonable(v, _depth + 1) for v in list(value)[:200]]
+        if hasattr(value, "model_dump"):                      # pydantic models (the OpenAI / Anthropic response types)
+            return _jsonable(value.model_dump(), _depth + 1)
+        if getattr(value, "__dict__", None):                  # an object with attributes: show them (an empty one: its repr)
+            return _jsonable(vars(value), _depth + 1)
+        return repr(value)[:500]
+    except Exception:
+        return "<unserialisable>"
+
+
+class _Tracer:
+    """Owns the background sender: a queue, one daemon thread, retry with backoff. submit() never blocks or raises."""
+
+    def __init__(self, api_key: str, base_url: str, *, max_queue: int = 1000, timeout: float = 10.0):
+        self._http = _Http(base_url, api_key, timeout)
+        self._q: "queue.Queue[dict]" = queue.Queue(maxsize=max_queue)
+        self._pending = 0
+        self._cv = threading.Condition()
+        self._thread: threading.Thread | None = None
+        self._lock = threading.Lock()
+        self.default_function: str | None = None   # which function a space key's traces are for (FNA-REQ-534)
+        self.space_key = False
+        self.dropped = 0          # traces thrown away (queue full, or refused for good)
+        self.sent = 0
+        self._warned = 0
+
+    def submit(self, trace: dict) -> None:
+        try:
+            with self._cv:
+                self._pending += 1
+            try:
+                self._q.put_nowait(trace)
+            except queue.Full:
+                self._done(dropped=True)
+                return
+            self._ensure_thread()
+        except Exception:                                    # pragma: no cover — fail-open
+            _tlog.debug("fnai tracing: could not queue a trace", exc_info=True)
+
+    def _ensure_thread(self) -> None:
+        with self._lock:
+            if self._thread is None or not self._thread.is_alive():
+                self._thread = threading.Thread(target=self._run, name="fnai-tracing", daemon=True)
+                self._thread.start()
+
+    def _done(self, *, dropped: bool = False, sent: bool = False) -> None:
+        with self._cv:
+            self._pending -= 1
+            if dropped:
+                self.dropped += 1
+            if sent:
+                self.sent += 1
+            self._cv.notify_all()
+
+    def _run(self) -> None:
+        while True:
+            try:
+                trace = self._q.get(timeout=30)
+            except queue.Empty:
+                return                                       # idle: the thread ends; submit() starts a new one
+            try:
+                self._send(trace)
+            except Exception:                                # pragma: no cover — never let the thread die loudly
+                self._done(dropped=True)
+                _tlog.debug("fnai tracing: sender error", exc_info=True)
+
+    def _send(self, trace: dict) -> None:
+        attempts = len(_RETRY_AFTER_S) + 1
+        for attempt in range(attempts):
+            try:
+                self._http("POST", "/v1/traces", trace)
+                self._done(sent=True)
+                return
+            except FnaiError as e:
+                retryable = e.status in _RETRY_STATUSES or e.status >= 500
+                if retryable and attempt < attempts - 1:
+                    time.sleep(_RETRY_AFTER_S[attempt])
+                    continue
+                if not retryable and self._warned < 3:        # refused for good (bad key, bad trace): say so, a few times
+                    self._warned += 1
+                    _tlog.warning("fnai tracing: a trace was refused (%s) and dropped", e)
+                self._done(dropped=True)
+                return
+            except Exception:
+                self._done(dropped=True)
+                return
+
+    def flush(self, timeout: float = 5.0) -> bool:
+        """Wait until everything queued has been sent (or dropped). True when nothing is left."""
+        deadline = time.monotonic() + timeout
+        with self._cv:
+            while self._pending > 0:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    return False
+                self._cv.wait(left)
+        return True
+
+
+_TRACER: _Tracer | None = None
+_CURRENT: "contextvars.ContextVar[Optional[_Trace]]" = contextvars.ContextVar("fnai_current_trace", default=None)
+
+
+def init_tracing(api_key: str | None = None, base_url: str | None = None, *, max_queue: int = 1000,
+                 function: str | None = None) -> None:
+    """Switch tracing on. `api_key` is your function's invoke key (fnk_…), or set FNAI_API_KEY; the key names the
+    function, so there is nothing else to say. With a SPACE key (fns_…) the key covers every function in the space, so
+    say which one: `function="my_function"` here, or `function=` on each trace(). `base_url` / FNAI_BASE_URL as
+    everywhere. Setting FNAI_TRACING=0 turns tracing off without touching your code. Without a key, trace() still
+    works and simply sends nothing."""
+    global _TRACER
+    key = api_key or os.environ.get("FNAI_API_KEY")
+    if not key or os.environ.get("FNAI_TRACING", "1").strip().lower() in ("0", "off", "false", "no"):
+        _TRACER = None
+        return
+    _TRACER = _Tracer(key, resolve_base_url(base_url).rstrip("/"), max_queue=max_queue)
+    _TRACER.default_function = function
+    _TRACER.space_key = key.startswith("fns_")
+
+
+def flush_traces(timeout: float = 5.0) -> bool:
+    """Wait (up to `timeout` s) for queued traces to go out — call it before a short script or a serverless handler
+    ends. Also runs automatically at normal interpreter exit. True when nothing is left to send."""
+    return True if _TRACER is None else _TRACER.flush(timeout)
+
+
+def trace_stats() -> dict:
+    """{"sent": n, "dropped": n, "waiting": n} — how tracing is doing, for a health check or a test."""
+    if _TRACER is None:
+        return {"sent": 0, "dropped": 0, "waiting": 0}
+    with _TRACER._cv:
+        return {"sent": _TRACER.sent, "dropped": _TRACER.dropped, "waiting": _TRACER._pending}
+
+
+def _flush_at_exit() -> None:
+    try:
+        flush_traces(5.0)
+    except Exception:                                        # pragma: no cover
+        pass
+
+
+atexit.register(_flush_at_exit)
+
+
+class _Trace:
+    """One recorded call. Use it through `with trace(...) as t:`; add the answer with t.output(...)."""
+
+    def __init__(self, input: Any = None, *, version_id: int | None = None, function: str | None = None):
+        self.function = function
+        self.version_id = version_id
+        self._input = input
+        self._output: Any = None
+        self._error: str | None = None
+        self._steps: list[dict] = []
+        self._cost = 0.0
+        self._model: str | None = None
+        self._t0 = time.monotonic()
+        self._token: Any = None
+        self.trace_id = uuid.uuid4().hex
+
+    # ── what you record ──
+    def output(self, value: Any) -> None:
+        """The call's answer. A dict is sent as it is; anything else is wrapped as {"output": value}."""
+        self._output = value
+
+    def error(self, problem: Any) -> None:
+        """Mark the call as failed, with a reason (a message or an exception)."""
+        self._error = f"{type(problem).__name__}: {problem}" if isinstance(problem, BaseException) else str(problem)
+
+    def cost(self, usd: float) -> None:
+        """Add to the call's cost, in dollars, if you know it (model steps may carry their own)."""
+        try:
+            self._cost += float(usd)
+        except (TypeError, ValueError):
+            pass
+
+    def step(self, step: dict) -> None:
+        """Add a step you built yourself, in the trace step format ({"type": "llm"|"tool", ...})."""
+        try:
+            if len(self._steps) < _MAX_STEPS:
+                self._steps.append(_jsonable(step))
+        except Exception:                                    # pragma: no cover — fail-open
+            pass
+
+    def tool(self, name: str, args: Any = None, output: Any = None, error: Any = None, latency_ms: int = 0) -> None:
+        """Record one tool call."""
+        self.step({"type": "tool", "tool": name, "args": args if isinstance(args, dict) else {"args": args},
+                   "ok": error is None, "output": output, "error": None if error is None else str(error),
+                   "latency_ms": int(latency_ms)})
+
+    def llm(self, model: str, tokens_in: int = 0, tokens_out: int = 0, latency_ms: int = 0, cost: float = 0.0,
+            **extra: Any) -> None:
+        """Record one model call."""
+        self.step({"type": "llm", "model": model, "tokens_in": int(tokens_in or 0), "tokens_out": int(tokens_out or 0),
+                   "cost": float(cost or 0.0), "latency_ms": int(latency_ms), **extra})
+
+    # ── plumbing ──
+    def _envelope(self, failed_with: BaseException | None) -> dict:
+        error = self._error
+        if failed_with is not None and error is None:
+            error = f"{type(failed_with).__name__}: {failed_with}"
+        llm = [s for s in self._steps if s.get("type") == "llm"]
+        model = next((s.get("model") for s in reversed(llm) if s.get("model")), None)
+        out = self._output
+        out = None if out is None else (out if isinstance(out, dict) else {"output": out})
+        inp = self._input
+        inp = {} if inp is None else (inp if isinstance(inp, dict) else {"input": inp})
+        body: dict[str, Any] = {
+            "trace_id": self.trace_id, "schema_version": 1, "source": "self_hosted",
+            "input": _jsonable(inp), "output": _jsonable(out), "success": error is None, "error": error,
+            "steps": self._steps,
+            "tokens_in": sum(int(s.get("tokens_in") or 0) for s in llm),
+            "tokens_out": sum(int(s.get("tokens_out") or 0) for s in llm),
+            "cost": round(self._cost + sum(float(s.get("cost") or 0) for s in llm), 8),
+            "latency_ms": max(0, int((time.monotonic() - self._t0) * 1000)),
+            "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        }
+        if model:
+            body["model"] = model
+        if self.version_id is not None:
+            body["version_id"] = int(self.version_id)
+        return body
+
+    def __enter__(self) -> "_Trace":
+        self._token = _CURRENT.set(self)
+        self._t0 = time.monotonic()
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        try:
+            _CURRENT.reset(self._token)
+        except Exception:                                    # pragma: no cover
+            _CURRENT.set(None)
+        try:
+            if _TRACER is not None:
+                env = self._envelope(exc)
+                fn_name = self.function or _TRACER.default_function
+                if _TRACER.space_key and fn_name:          # a space key covers many functions: name the one (a function key's own is implied)
+                    env["function"] = fn_name
+                _TRACER.submit(env)
+        except Exception:                                    # pragma: no cover — fail-open
+            _tlog.debug("fnai tracing: could not record a trace", exc_info=True)
+        return False                                         # never swallow your exception
+
+
+def trace(input: Any = None, *, function: str | None = None, version_id: int | None = None,
+          prompt: "Prompt | None" = None) -> _Trace:
+    """Record one call of your code:  with fnai.trace(input={...}) as t:  …  t.output({...}).
+
+    `input` is what the call was given. `function` (optional) is the function's slug, only for readability — the
+    key already names it. `version_id` (optional) links the trace to a prompt version you pulled from
+    Functional AI; leave it out if you have none. If the block raises, the trace is recorded as failed and your
+    exception goes on as normal. Inside the block, @traced tools and wrapped OpenAI / Anthropic clients add their
+    steps by themselves. `prompt=` (from get_prompt) names the version you used, so you need not copy its id."""
+    if prompt is not None and version_id is None:
+        version_id = prompt.version_id
+    return _Trace(input, version_id=version_id, function=function)
+
+
+def current_trace() -> "_Trace | None":
+    """The trace the running code is inside, or None."""
+    return _CURRENT.get()
+
+
+def _call_args(fn: Any, args: tuple, kwargs: dict) -> dict:
+    try:
+        bound = inspect.signature(fn).bind_partial(*args, **kwargs)
+        return {k: _jsonable(v) for k, v in bound.arguments.items() if k not in ("self", "cls")}
+    except Exception:
+        return {"args": _jsonable(list(args)), "kwargs": _jsonable(kwargs)}
+
+
+def traced(_fn: Any = None, *, name: str | None = None) -> Any:
+    """Record each call of a tool function as a tool step of the trace it runs inside (name, arguments, output or
+    error, time taken). Use bare (@fnai.traced) or with a name (@fnai.traced(name="web_search")). Works for plain
+    and async functions. Outside a trace it just calls the function. An exception is recorded and then raised
+    again, unchanged."""
+    def decorate(fn: Any) -> Any:
+        tool_name = name or getattr(fn, "__name__", "tool")
+
+        def record(t: "_Trace | None", args: tuple, kwargs: dict, t0: float, output: Any, error: Any) -> None:
+            if t is None:
+                return
+            try:
+                t.tool(tool_name, _call_args(fn, args, kwargs), output=output, error=error,
+                       latency_ms=int((time.monotonic() - t0) * 1000))
+            except Exception:                                # pragma: no cover — fail-open
+                pass
+
+        if inspect.iscoroutinefunction(fn):
+            @functools.wraps(fn)
+            async def awrapper(*args: Any, **kwargs: Any) -> Any:
+                t, t0 = _CURRENT.get(), time.monotonic()
+                try:
+                    out = await fn(*args, **kwargs)
+                except BaseException as e:
+                    record(t, args, kwargs, t0, None, e)
+                    raise
+                record(t, args, kwargs, t0, out, None)
+                return out
+            return awrapper
+
+        @functools.wraps(fn)
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            t, t0 = _CURRENT.get(), time.monotonic()
+            try:
+                out = fn(*args, **kwargs)
+            except BaseException as e:
+                record(t, args, kwargs, t0, None, e)
+                raise
+            record(t, args, kwargs, t0, out, None)
+            return out
+        return wrapper
+
+    return decorate(_fn) if _fn is not None else decorate
+
+
+def _usage_of(resp: Any) -> tuple[int, int]:
+    """(tokens in, tokens out) from an OpenAI- or Anthropic-style response, whichever names it uses."""
+    u = getattr(resp, "usage", None)
+    if u is None and isinstance(resp, dict):
+        u = resp.get("usage")
+    if u is None:
+        return 0, 0
+    get = (lambda k: u.get(k)) if isinstance(u, dict) else (lambda k: getattr(u, k, None))
+    tin = get("prompt_tokens") if get("prompt_tokens") is not None else get("input_tokens")
+    tout = get("completion_tokens") if get("completion_tokens") is not None else get("output_tokens")
+    return int(tin or 0), int(tout or 0)
+
+
+def _wrap_method(owner: Any, attr: str, label: str) -> bool:
+    """Replace owner.<attr> with a version that records an LLM step. Returns False if there is nothing to wrap."""
+    original = getattr(owner, attr, None)
+    if original is None or getattr(original, "_fnai_wrapped", False):
+        return original is not None
+
+    def note(t: "_Trace | None", kwargs: dict, resp: Any, t0: float, streamed: bool = False) -> None:
+        if t is None:
+            return
+        try:
+            tin, tout = _usage_of(resp)
+            model = kwargs.get("model") or getattr(resp, "model", None) or (resp.get("model") if isinstance(resp, dict) else None)
+            t.llm(str(model or label), tin, tout, int((time.monotonic() - t0) * 1000), **({"streamed": True} if streamed else {}))
+        except Exception:                                    # pragma: no cover — fail-open
+            pass
+
+    if inspect.iscoroutinefunction(original):
+        @functools.wraps(original)
+        async def awrapper(*args: Any, **kwargs: Any) -> Any:
+            t, t0 = _CURRENT.get(), time.monotonic()
+            resp = await original(*args, **kwargs)
+            note(t, kwargs, resp, t0, streamed=bool(kwargs.get("stream")))
+            return resp
+        awrapper._fnai_wrapped = True                        # type: ignore[attr-defined]
+        setattr(owner, attr, awrapper)
+    else:
+        @functools.wraps(original)
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            t, t0 = _CURRENT.get(), time.monotonic()
+            resp = original(*args, **kwargs)
+            note(t, kwargs, resp, t0, streamed=bool(kwargs.get("stream")))
+            return resp
+        wrapper._fnai_wrapped = True                         # type: ignore[attr-defined]
+        setattr(owner, attr, wrapper)
+    return True
+
+
+def wrap_openai(client: Any) -> Any:
+    """Record every model call made through an OpenAI client (chat.completions.create and responses.create, sync or
+    async) as an LLM step — model, tokens, time — of the trace it runs inside. Returns the same client, so
+    `client = fnai.wrap_openai(OpenAI())`. A streamed call is recorded when it starts, without token counts."""
+    try:
+        _wrap_method(client.chat.completions, "create", "openai")
+    except AttributeError:
+        pass
+    try:
+        _wrap_method(client.responses, "create", "openai")
+    except AttributeError:
+        pass
+    return client
+
+
+def wrap_anthropic(client: Any) -> Any:
+    """Record every model call made through an Anthropic client (messages.create, sync or async) as an LLM step —
+    model, tokens, time — of the trace it runs inside. Returns the same client."""
+    try:
+        _wrap_method(client.messages, "create", "anthropic")
+    except AttributeError:
+        pass
+    return client
+
+
+# ── FNA-REQ-530: run a dataset through your own code and get scored results ─────────────────────────────────────────
+#
+#     result = fnai.eval("my_function", dataset="tickets", task=my_agent, score_set=4)
+#     print(result["pass_rate"], result["url"])
+#
+# Functional AI hands out the rows, your `task(input)` runs each one on your own computer (your model, your tools),
+# the steps it took are recorded, each result is sent back, and the experiment is finished and scored. See
+# docs/user-run-experiments.md for the three calls underneath.
+
+def _call_task(task: Any, row_input: dict) -> Any:
+    out = task(row_input)
+    if inspect.isawaitable(out):
+        import asyncio
+        out = asyncio.run(out)
+    return out
+
+
+def _result_for_row(task: Any, row_input: dict) -> dict:
+    """Run `task` on one row, never raise: a task that raises becomes a failed row. Returns the PUT body."""
+    t = _Trace(row_input)
+    token = _CURRENT.set(t)
+    t0 = time.monotonic()
+    error: str | None = None
+    out: Any = None
+    try:
+        out = _call_task(task, row_input)
+    except Exception as e:  # noqa: BLE001 — the row fails, the run goes on
+        error = f"{type(e).__name__}: {e}"
+    finally:
+        try:
+            _CURRENT.reset(token)
+        except Exception:                                    # pragma: no cover
+            _CURRENT.set(None)
+    env = t._envelope(None)
+    if error is None and t._error:
+        error = t._error
+    body: dict[str, Any] = {
+        "output": None if error else (out if isinstance(out, dict) else {"output": _jsonable(out)}),
+        "steps": env["steps"], "tokens_in": env["tokens_in"], "tokens_out": env["tokens_out"],
+        "cost": env["cost"], "latency_ms": max(0, int((time.monotonic() - t0) * 1000)),
+        "error": error, "success": error is None,
+    }
+    if isinstance(body["output"], dict):
+        body["output"] = _jsonable(body["output"])
+    if env.get("model"):
+        body["model"] = str(env["model"])[:80]
+    return body
+
+
+def _put_with_retry(http: "_Http", path: str, body: dict, tries: int = 4) -> None:
+    for attempt in range(tries):
+        try:
+            http("PUT", path, body)
+            return
+        except FnaiError as e:
+            retryable = e.status in _RETRY_STATUSES or e.status >= 500
+            if not retryable or attempt == tries - 1:
+                raise
+            time.sleep(_RETRY_AFTER_S[min(attempt, len(_RETRY_AFTER_S) - 1)])
+
+
+_EVAL_POLL_S: float | None = None     # tests set this to 0 so they do not wait
+
+
+def run_eval(http: "_Http", function: "int | str", *, task: Any, dataset: "int | str | None" = None,
+             snapshot: int | None = None, score_set: int | None = None, name: str | None = None,
+             version: int | None = None, repeats: int = 1, concurrency: int = 1,
+             progress: Any = None, resume: int | None = None, wait_timeout: float = 600.0) -> dict:
+    """Implementation of Client.eval.run / fnai.eval. See fnai.eval."""
+    from concurrent.futures import ThreadPoolExecutor
+    if not callable(task):
+        raise ValueError("task must be a function that takes a row's input (a dict) and returns the answer.")
+    if concurrency < 1:
+        raise ValueError("concurrency must be at least 1.")
+    fn_id = _resolve_function_id(http, function)
+    exps = _Experiments(http)
+    if resume is not None:
+        exp_id = int(resume)
+    else:
+        if snapshot is None:
+            ds_id = _resolve_dataset_id(http, fn_id, dataset)
+            snapshot = _Datasets(http).snapshot(ds_id)["id"]
+        # the server wants the field present; an empty list means "the function's newest version"
+        pins: dict[str, Any] = {"mode": "user_run", "snapshot_id": int(snapshot), "repeats": int(repeats), "version_ids": []}
+        if name:
+            pins["name"] = name
+        if version is not None:
+            pins["version_ids"] = [int(version)]
+        if score_set is not None:
+            pins["plan_id"] = int(score_set)
+        else:
+            ids = [s["id"] for s in _Scores(http).list(fn_id)]
+            if not ids:
+                raise ValueError("this function has no checks yet — pass score_set=<id> or add checks in the app.")
+            pins["score_ids"] = ids
+        exp_id = http("POST", f"/api/functions/{fn_id}/experiments", pins)["id"]
+
+    given = http("GET", f"/api/experiments/{exp_id}/user-run/rows")
+    done = {(r["row"], r["repeat"]) for r in given.get("received", [])}
+    jobs = [(r["row"], rep, r["input"]) for r in given["rows"] for rep in range(1, int(given["repeats"]) + 1)
+            if (r["row"], rep) not in done]
+    total = len(given["rows"]) * int(given["repeats"])
+    counts = {"ok": 0, "failed": 0, "sent": len(done)}
+    lock = threading.Lock()
+
+    def one(job: tuple) -> None:
+        row, rep, row_input = job
+        body = _result_for_row(task, row_input if isinstance(row_input, dict) else {"input": row_input})
+        body["repeat"] = rep
+        _put_with_retry(http, f"/api/experiments/{exp_id}/user-run/rows/{row}", body)
+        with lock:
+            counts["ok" if body["success"] else "failed"] += 1
+            counts["sent"] += 1
+            if progress is not None:
+                try:
+                    progress(counts["sent"], total, row, body["success"])
+                except Exception:                            # pragma: no cover — a bad callback never stops the run
+                    pass
+
+    if concurrency == 1:
+        for j in jobs:
+            one(j)
+    else:
+        with ThreadPoolExecutor(max_workers=concurrency) as pool:
+            for f in [pool.submit(one, j) for j in jobs]:
+                f.result()
+
+    exp = http("POST", f"/api/experiments/{exp_id}/user-run/finish", {})
+    deadline = time.monotonic() + wait_timeout          # scoring runs on our side; wait for it so the summary is real
+    while exp.get("status") not in ("completed", "failed") and time.monotonic() < deadline:
+        time.sleep(min(2.0, max(0.0, deadline - time.monotonic())) if _EVAL_POLL_S is None else _EVAL_POLL_S)
+        exp = http("GET", f"/api/experiments/{exp_id}")
+    checks = []
+    try:
+        checks = _Scores(http).results(fn_id, experiment_ids=str(exp_id), group_by="experiment") or []
+    except FnaiError:
+        pass
+    # overall pass rate: each check group weighted by how many rows it covers (a row that crashed in your code has no
+    # model, so it forms its own group)
+    graded = [(c["pass_rate"], c.get("n") or 1) for c in checks if isinstance(c.get("pass_rate"), (int, float))]
+    total_n = sum(n for _, n in graded)
+    return {
+        "experiment_id": exp_id, "function_id": fn_id, "status": exp.get("status"),
+        "rows": len(given["rows"]), "repeats": int(given["repeats"]), "sent": counts["sent"],
+        "task_failed": counts["failed"], "not_run": max(0, total - counts["sent"]),
+        "pass_rate": (sum(r * n for r, n in graded) / total_n) if total_n else None,
+        "checks": [{"score": c.get("score"), "model": c.get("model"), "pass_rate": c.get("pass_rate"), "n": c.get("n")}
+                   for c in checks],
+        "url": f"{http._base}/fn/{fn_id}?panel=experiments",
+    }
+
+
+def _resolve_dataset_id(http: "_Http", fn_id: int, dataset: "int | str | None") -> int:
+    if isinstance(dataset, int):
+        return dataset
+    sets = _Datasets(http).list(fn_id)
+    if dataset is None:
+        if not sets:
+            raise ValueError("this function has no datasets yet — create one in the app, or pass dataset=<id or name>.")
+        return sets[-1]["id"]
+    for d in sets:
+        if d.get("name") == dataset:
+            return d["id"]
+    raise ValueError(f"no dataset named {dataset!r} on this function — choices: {[d.get('name') for d in sets]}")
+
+
+def eval(function: "int | str", *, task: Any, dataset: "int | str | None" = None, snapshot: int | None = None,
+         score_set: int | None = None, name: str | None = None, version: int | None = None, repeats: int = 1,
+         concurrency: int = 1, progress: Any = None, resume: int | None = None, wait_timeout: float = 600.0,
+         token: str | None = None,
+         base_url: str | None = None) -> dict:
+    """Run a dataset through YOUR code and get it scored — one call.
+
+        result = fnai.eval("support_triage", dataset="tickets", task=my_agent, score_set=4, concurrency=4)
+
+    Each dataset row's input (a dict) is passed to `task(input)`; whatever it returns (a dict, or any value, which is
+    wrapped as {"output": value}) is the answer. Inside `task`, @traced tools and wrapped OpenAI / Anthropic clients
+    record their steps. A `task` that raises fails that row only — the run goes on. `task` may be async.
+
+    function: id or slug. dataset: id or name (default: the newest one) — a fresh snapshot is taken; or pass
+    `snapshot=` to use one. `resume=<experiment id>` carries on a run that stopped part-way (rows already sent are
+    skipped). It waits (up to `wait_timeout` seconds, default 600) for the scoring to finish. score_set: the Score Set id (default: every check on the function). Authentication:
+    `token=` or the FNAI_TOKEN environment variable (a personal access token). Returns
+    {"experiment_id", "status", "rows", "task_failed", "not_run", "pass_rate", "checks", "url"}."""
+    key = token or os.environ.get("FNAI_TOKEN")
+    if not key:
+        raise ValueError("fnai.eval needs your personal access token: pass token=… or set FNAI_TOKEN.")
+    http = _Http(resolve_base_url(base_url), key, DEFAULT_TIMEOUT_S)
+    return run_eval(http, function, task=task, dataset=dataset, snapshot=snapshot, score_set=score_set, name=name,
+                    version=version, repeats=repeats, concurrency=concurrency, progress=progress, resume=resume, wait_timeout=wait_timeout)
+
+
+# ── FNA-REQ-531: fetch a prompt version, fill it in on your own computer ─────────────────────────────────────────────
+#
+#     p = fnai.get_prompt("ticket_summary", "live")        # or a version number; key: FNAI_API_KEY (fnk_…)
+#     text = p.render(ticket_text=ticket)                  # filled in here; nothing is sent to Functional AI
+#     answer = my_openai.chat(model=p.model, temperature=p.temperature, messages=[{"role": "user", "content": text}])
+#     with fnai.trace(input={"ticket_text": ticket}, prompt=p) as t:   # the trace names the version it used
+#         ...
+#
+# "Live" is whatever was last deployed in the app (rollback included), so a change there reaches your code on its next
+# fetch with no redeploy of yours. Nothing runs on Functional AI's side.
+
+_PROMPT_VAR = re.compile(r"\{([a-z_][a-z0-9_]*)\}")      # the server's rule: {name}; anything else stays as written
+_PROMPT_CACHE: dict = {}
+_PROMPT_CACHE_LOCK = threading.Lock()
+
+
+class Prompt:
+    """One prompt version: its text, how to fill it in, and the model and settings it is marked live with."""
+
+    def __init__(self, data: dict):
+        self.data = data
+        self.function: str = data.get("function", "")
+        self.version: int = data["version"]
+        self.version_id: int = data["version_id"]
+        self.live: bool = bool(data.get("live"))
+        self.template: str = data.get("template", "")
+        self.variables: list[str] = list((data.get("substitution") or {}).get("vars") or [])
+        self.model: str | None = data.get("model")
+        self.settings: dict = dict(data.get("settings") or {})
+        self.temperature: float | None = self.settings.get("temperature")
+        self.input_schema: dict = data.get("input_schema") or {}
+        self.output_schema: dict = data.get("output_schema") or {}
+        self.artifact_hash: str | None = data.get("artifact_hash")
+
+    def render(self, values: dict | None = None, **kw: Any) -> str:
+        """Fill in the {variables}: each {name} becomes str(value). A name you gave no value for is left as written,
+        exactly as Functional AI's own renderer does. `p.render({"a": 1})` or `p.render(a=1)`."""
+        vals = {**(values or {}), **kw}
+        return _PROMPT_VAR.sub(lambda mt: str(vals[mt.group(1)]) if mt.group(1) in vals else mt.group(0), self.template)
+
+    def __repr__(self) -> str:
+        return f"Prompt({self.function!r} v{self.version}{' live' if self.live else ''}, model={self.model!r})"
+
+
+def get_prompt(function: str, version: "int | str" = "live", *, api_key: str | None = None,
+               base_url: str | None = None, cache_seconds: float = 60.0) -> Prompt:
+    """Fetch a prompt version. `version` is "live" (default) or a version number. `api_key` is the function's invoke
+    key (fnk_…), or set FNAI_API_KEY. The answer is kept for `cache_seconds` (0 = always ask); if Functional AI
+    can't be reached the last copy you got is used, so a network problem does not stop your code."""
+    key = api_key or os.environ.get("FNAI_API_KEY")
+    if not key:
+        raise ValueError("get_prompt needs the function's invoke key: pass api_key=… or set FNAI_API_KEY.")
+    base = resolve_base_url(base_url).rstrip("/")
+    ck = (base, key, function, str(version))
+    now = time.monotonic()
+    with _PROMPT_CACHE_LOCK:
+        hit = _PROMPT_CACHE.get(ck)
+    if hit is not None and cache_seconds > 0 and now - hit[0] < cache_seconds:
+        return hit[1]
+    try:
+        data = _Http(base, key, 15.0)("GET", f"/v1/prompts/{function}", query={"version": str(version)})
+    except FnaiError as e:
+        if hit is not None and (e.status == 0 or e.status >= 500):      # unreachable or struggling: last good copy
+            _tlog.warning("fnai: could not refresh prompt %s (%s); using the copy from earlier", function, e)
+            return hit[1]
+        raise
+    p = Prompt(data)
+    with _PROMPT_CACHE_LOCK:
+        _PROMPT_CACHE[ck] = (now, p)
+    return p

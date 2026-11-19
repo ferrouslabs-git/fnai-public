@@ -41,12 +41,14 @@ func stub(t *testing.T) (*httptest.Server, *Client) {
 			// failure: error present, output null — matches the frozen /v1 contract
 			json.NewEncoder(w).Encode(map[string]any{"output": nil, "status": "failed",
 				"error": "boom", "meta": map[string]any{"version": 3, "latency_ms": 5,
-					"cost_usd": 0.0, "tokens_in": 1, "tokens_out": 0, "trace_id": "t1"}})
+					"cost_usd": 0.0, "tokens_in": 1, "tokens_out": 0, "trace_id": "t1",
+					"funded_by": nil}}) // a test model uses no provider key: funded_by is null
 			return
 		}
 		json.NewEncoder(w).Encode(map[string]any{"output": map[string]any{"x": 1},
 			"status": "success", "meta": map[string]any{"version": 3, "latency_ms": 12,
-				"cost_usd": 0.000016, "tokens_in": 28, "tokens_out": 18, "trace_id": "t2"}})
+				"cost_usd": 0.000016, "tokens_in": 28, "tokens_out": 18, "trace_id": "t2",
+				"funded_by": "functional_ai"}})
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
@@ -99,12 +101,19 @@ func TestMintKeyAndRunBothPaths(t *testing.T) {
 	if err != nil || !res.OK() || res.Meta.TraceID != "t2" || res.Meta.TokensIn != 28 {
 		t.Fatalf("success path: %v %+v", err, res)
 	}
+	// FNA-REQ-477: whose provider key paid
+	if res.Meta.FundedBy == nil || *res.Meta.FundedBy != "functional_ai" || !res.Meta.FundedByFunctionalAI() {
+		t.Fatalf("funded_by should decode as functional_ai: %+v", res.Meta)
+	}
 	res, err = fn.Run(map[string]any{"fail": true})
 	if err != nil {
 		t.Fatalf("execution failure must not be a Go error: %v", err)
 	}
 	if res.OK() || res.Error != "boom" || res.Output != nil {
 		t.Fatalf("failure path decode: %+v", res)
+	}
+	if res.Meta.FundedBy != nil || res.Meta.FundedByFunctionalAI() {
+		t.Fatalf("a null funded_by must decode as nil: %+v", res.Meta)
 	}
 	_ = srv
 }

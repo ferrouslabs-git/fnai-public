@@ -36,7 +36,9 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -281,7 +283,7 @@ func client() (*fnai.Client, error) {
 
 func cmdLogin(args []string) error {
 	fs := newFlagSet("login")
-	base := fs.String("base-url", "", "server URL (default: production)")
+	base := fs.String("base-url", "", "server URL (default: https://uat.fnai.dev until production launches)")
 	token := fs.String("token", "", "paste your token instead of typing it interactively")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -300,11 +302,19 @@ func cmdLogin(args []string) error {
 		return fmt.Errorf("that doesn't look like a personal access token — it should start with fnp_ " +
 			"(mint one in the app under your avatar → API tokens)")
 	}
-	c := &config{Token: t, BaseURL: *base}
+	existing, err := loadConfig()
+	if err != nil {
+		return err
+	}
+	baseURL := existing.BaseURL
+	if *base != "" {
+		baseURL = *base
+	}
+	c := &config{Token: t, BaseURL: baseURL}
 	if err := saveConfig(c); err != nil {
 		return err
 	}
-	cl := fnai.NewClient(t, urlOpt(*base)...)
+	cl := fnai.NewClient(t, urlOpt(baseURL)...)
 	me, err := cl.Me()
 	if err != nil {
 		return fmt.Errorf("saved the token, but it doesn't seem to work: %w", err)
@@ -448,7 +458,7 @@ func pushYAML(cfg *config, fnID string, raw []byte) (map[string]any, error) {
 		base = cfg.BaseURL
 	}
 	if base == "" {
-		base = "http://localhost:8000"
+		base = fnai.DefaultBaseURL
 	}
 	req, err := http.NewRequest("POST", strings.TrimRight(base, "/")+"/api/functions/"+fnID+"/versions/yaml",
 		bytes.NewReader(raw))
@@ -505,7 +515,7 @@ func cmdRun(args []string) error {
 	fs := newFlagSet("run")
 	key := fs.String("key", os.Getenv("FNAI_INVOKE_KEY"), "the function's fnk_... invoke key")
 	input := fs.String("input", "{}", "JSON object, e.g. '{\"ticket_text\": \"...\"}'")
-	baseURL := fs.String("base-url", "", "server URL (default: production)")
+	baseURL := fs.String("base-url", "", "server URL (default: https://uat.fnai.dev until production launches)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -521,7 +531,18 @@ func cmdRun(args []string) error {
 	if err := json.Unmarshal([]byte(*input), &in); err != nil {
 		return fmt.Errorf("--input must be a JSON object: %w", err)
 	}
-	f := fnai.NewFunction(fs.Arg(0), *key, urlOpt(*baseURL)...)
+	runBase := *baseURL
+	if runBase == "" {
+		runBase = os.Getenv("FNAI_BASE_URL")
+	}
+	if runBase == "" {
+		cfg, err := loadConfig()
+		if err != nil {
+			return err
+		}
+		runBase = cfg.BaseURL
+	}
+	f := fnai.NewFunction(fs.Arg(0), *key, urlOpt(runBase)...)
 	res, err := f.Run(in)
 	if err != nil {
 		return err
@@ -534,6 +555,9 @@ func cmdRun(args []string) error {
 	out, _ := json.MarshalIndent(res.Output, "", "  ")
 	fmt.Println(string(out))
 	fmt.Fprintf(os.Stderr, "(%dms, $%.4f, trace %s)\n", res.Meta.LatencyMS, res.Meta.CostUSD, res.Meta.TraceID)
+	if res.Meta.FundedByFunctionalAI() { // FNA-REQ-477
+		fmt.Fprintln(os.Stderr, "note: this call ran on Functional AI's key, not one of yours. Set up your own key under API keys in the app.")
+	}
 	return nil
 }
 
@@ -722,11 +746,18 @@ func cmdEval(args []string) error {
 	snapshotID := fs.Int("snapshot", 0, "dataset snapshot id (default: the function's latest)")
 	scoresFlag := fs.String("scores", "", "comma-separated score ids (default: every score on the function)")
 	repeats := fs.Int("repeats", 1, "repeats per row")
+	task := fs.String("task", "", "a command that runs ONE row through your own code: the row's input (JSON) arrives on stdin, "+
+		"the answer (JSON) goes to stdout; a nonzero exit marks the row failed")
+	dataset := fs.String("dataset", "", "with --task: dataset id or name (default: the newest)")
+	scoreSet := fs.Int("score-set", 0, "with --task: the Score Set id (default: every check)")
+	concurrency := fs.Int("concurrency", 1, "with --task: rows run at once")
+	minPass := fs.Float64("min-pass-rate", -1, "with --task: exit nonzero if the overall pass rate (0-1) is below this")
+	asJSON := fs.Bool("json", false, "with --task: print the summary as JSON only")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
-		return fmt.Errorf("usage: fn eval <function-id> [--version <id>] [--snapshot <id>] [--scores <id,id>]")
+		return fmt.Errorf("usage: fn eval <function-id> [--version <id>] [--snapshot <id>] [--scores <id,id>] [--task <command>]")
 	}
 	fnID, err := strconv.Atoi(fs.Arg(0))
 	if err != nil {
@@ -735,6 +766,9 @@ func cmdEval(args []string) error {
 	c, err := client()
 	if err != nil {
 		return err
+	}
+	if *task != "" {
+		return evalOwnCode(c, fnID, *task, *dataset, *snapshotID, *scoreSet, *versionID, *repeats, *concurrency, *minPass, *asJSON)
 	}
 
 	vID := *versionID
@@ -964,6 +998,89 @@ func cmdTypes(args []string) error {
 	fmt.Print(types.Source)
 	if !strings.HasSuffix(types.Source, "\n") {
 		fmt.Println()
+	}
+	return nil
+}
+
+// evalOwnCode is `fn eval --task "<command>"` (FNA-REQ-530): each dataset row is run through YOUR program — its input
+// as JSON on stdin, the answer as JSON on stdout — and the results are sent to a scored experiment.
+func evalOwnCode(c *fnai.Client, fnID int, command, dataset string, snapshot, scoreSet, version, repeats, concurrency int,
+	minPass float64, asJSON bool) error {
+	run := func(in map[string]any, rec *fnai.EvalRecorder) (any, error) {
+		payload, _ := json.Marshal(in)
+		var cmd *exec.Cmd
+		if runtime.GOOS == "windows" {
+			cmd = exec.Command("cmd", "/C", command)
+		} else {
+			cmd = exec.Command("sh", "-c", command)
+		}
+		cmd.Stdin = bytes.NewReader(payload)
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		out, err := cmd.Output()
+		if err != nil {
+			msg := strings.TrimSpace(stderr.String())
+			if msg == "" {
+				msg = err.Error()
+			}
+			return nil, fmt.Errorf("%s", msg)
+		}
+		var ans any
+		if err := json.Unmarshal(bytes.TrimSpace(out), &ans); err != nil {
+			return strings.TrimSpace(string(out)), nil // plain text is an answer too
+		}
+		return ans, nil
+	}
+	opts := fnai.EvalOptions{ScoreSet: scoreSet, Snapshot: snapshot, Version: version, Repeats: repeats, Concurrency: concurrency}
+	if dataset != "" {
+		if id, err := strconv.Atoi(dataset); err == nil {
+			opts.Dataset = id
+		} else {
+			opts.Dataset = dataset
+		}
+	}
+	if !asJSON {
+		fmt.Fprintln(os.Stderr, "Running your code on each row...")
+		opts.Progress = func(done, total, row int, ok bool) {
+			word := "ok"
+			if !ok {
+				word = "FAILED"
+			}
+			fmt.Fprintf(os.Stderr, "  %d/%d  row %d  %s\n", done, total, row, word)
+		}
+	}
+	res, err := c.Eval.Run(fnID, run, opts)
+	if err != nil {
+		return err
+	}
+	below := minPass >= 0 && (res.PassRate == nil || *res.PassRate < minPass)
+	if asJSON {
+		b, _ := json.MarshalIndent(res, "", "  ")
+		fmt.Println(string(b))
+	} else {
+		for _, ch := range res.Checks {
+			word := "ok  "
+			if ch.PassRate != nil && *ch.PassRate < 1 {
+				word = "FAIL"
+			}
+			rate := "-"
+			if ch.PassRate != nil {
+				rate = fmt.Sprintf("%.0f%%", *ch.PassRate*100)
+			}
+			fmt.Printf("%s  %-30v pass_rate=%s\n", word, ch.Score, rate)
+		}
+		pr := "-"
+		if res.PassRate != nil {
+			pr = fmt.Sprintf("%.0f%%", *res.PassRate*100)
+		}
+		fmt.Printf("%d row(s), %d failed in your code, %d not run; pass rate %s\n%s\n", res.Rows, res.TaskFailed, res.NotRun, pr, res.URL)
+	}
+	if below {
+		got := "n/a"
+		if res.PassRate != nil {
+			got = fmt.Sprintf("%.0f%%", *res.PassRate*100)
+		}
+		return fmt.Errorf("pass rate %s is below the required %.0f%%", got, minPass*100)
 	}
 	return nil
 }

@@ -28,6 +28,7 @@ SDK (`sdk/go/fnai.go`) one directory up:
 | `fn ls` | list your functions |
 | `fn run <slug> --key <fnk_...> --input '{...}'` | invoke a **deployed** function |
 | `fn eval <function-id>` | run the function's checks; **exits nonzero if any fail** (for CI) |
+| `fn eval <function-id> --task "<command>"` | run each dataset row through **your own program** (row input JSON on stdin, answer JSON on stdout) and score it; `--min-pass-rate 0.9` exits nonzero below it |
 | `fn deploy <function-id> <version-id>` | make a version the live deployment |
 | `fn rollback <function-id> [--to-version <id>]` | roll back the live deployment |
 | `fn pin <function-id> <version-id>` | remember a version for the current folder |

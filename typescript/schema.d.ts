@@ -829,8 +829,9 @@ export interface paths {
         /**
          * Upload Rows
          * @description Bulk-load rows from a spreadsheet. Mapping is explicit — columns are never guessed.
-         *     Values are coerced to the types declared by the function's input schema (latest
-         *     version's schema, falling back to the function-level one).
+         *     Values are coerced to the types declared by the function's input and output schemas
+         *     (latest version's schema, falling back to the function-level one); an output field
+         *     the schema doesn't type is kept as given.
          */
         post: operations["upload_rows"];
         delete?: never;
@@ -1005,6 +1006,69 @@ export interface paths {
          *     Completed experiments are immutable: clone to run again.
          */
         post: operations["run_saved_experiment"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/findings/{finding_id}/prompt-fix": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Suggest Prompt Fix
+         * @description FNA-REQ-452: a model on Functional AI's key reads the finding's failing rows and the version's prompt and proposes
+         *     one concrete edit. Only on request; one platform_tools event (10 credits). Stores nothing.
+         */
+        post: operations["suggest_prompt_fix"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/findings/{finding_id}/prompt-fix/apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Apply Prompt Fix
+         * @description FNA-REQ-452: the edit, exactly as shown, saved as a new draft version of the function (never deployed).
+         */
+        post: operations["apply_prompt_fix"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/experiments/{exp_id}/check-results": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Check Results
+         * @description FNA-REQ-523: which row passed or failed each score, and why. One entry per row x repeat x model x version x
+         *     score, failures first; `row` is the row's number in the experiment's dataset version (from 1). Paged (limit up to
+         *     500).
+         */
+        get: operations["list_check_results"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1216,6 +1280,48 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/provider-keys/sources": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Key Sources
+         * @description Per provider: which source the org chose, and who would pay for a call right now.
+         */
+        get: operations["key_sources"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/provider-keys/sources/{provider}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set Key Source
+         * @description The owner/admins choose whose key runs this provider's calls. Takes effect on new calls at once; every
+         *     change is audited. Choosing Functional AI's key is refused while Functional AI has no working key for
+         *     the provider, so a click can never leave the org's calls without a key.
+         */
+        put: operations["set_key_source"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/provider-keys/console": {
         parameters: {
             query?: never;
@@ -1310,6 +1416,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/models/catalog": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Model Catalog
+         * @description The models a model picker may offer: only those switched on (status `active`), with their provider and
+         *     display name — never a price (GET /api/models and the platform's Models page carry those). Narrowed to what the
+         *     organization and the space have allowed (FNA-REQ-253). Read from the
+         *     in-memory registry, so it follows a staff edit within one refresh and costs no database call. The test model
+         *     `mock-small` is included, as in GET /api/models, so pickers work in dev.
+         */
+        get: operations["model_catalog"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/versions/{v_id}/gate": {
         parameters: {
             query?: never;
@@ -1349,6 +1479,28 @@ export interface paths {
         put?: never;
         /** Run Plan */
         post: operations["run_plan"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/versions/{v_id}/plan/defaults": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Plan Defaults
+         * @description FNA-REQ-450: the scores a new Score Set for this agent starts with, each with the reason it is there. Read-only:
+         *     nothing is saved; the builder ticks them and the person saves (or unticks) as with any other score. A prompt
+         *     function gets none.
+         */
+        get: operations["plan_defaults"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1538,9 +1690,15 @@ export interface paths {
         };
         /**
          * List Traces
-         * @description Newest first. Page with `before_id` (the `id` of the last trace you have; the next page is the traces
-         *     before it). Every filter is optional and they combine: `status` (success|partial|failed|escalated|...),
-         *     `success`, `model`, `tool` (traces whose steps include that tool), `since`/`until` (time range).
+         * @description Newest first (by the time the call happened). Page with `before_id` (the `id` of the last trace you have; the next
+         *     page is the traces before it). Every filter is optional and they combine: `status`
+         *     (success|partial|failed|escalated|...), `success`, `has_error` (an error was recorded or the call failed),
+         *     `model`, `version_id`, `key_id` (the invoke key that made the call), `tool` (traces whose steps include that tool),
+         *     `since`/`until` (time range).
+         *
+         *     `q` searches the saved input and output text (case-insensitive, "contains"; a value hidden by redaction cannot be
+         *     found). It needs `function_id` and at least 3 characters, and looks back 7 days unless `since` is given (never more
+         *     than 30). Runs whose details were moved to the archive are not searched.
          */
         get: operations["list_traces"];
         put?: never;
@@ -1581,10 +1739,33 @@ export interface paths {
         };
         /**
          * Function Health
-         * @description The 'is my function okay?' rollup, computed from traces in the window:
-         *     calls, error rate, p50/p95 latency, spend — total and per source/version.
+         * @description The 'is my function okay?' rollup: calls, error rate, p50/p95 latency, spend and tokens over the window, in total
+         *     and per source and version. Worked out from running totals (FNA-REQ-403), so it costs the same however many traces
+         *     exist; the window starts at the top of the hour it falls in, and p50/p95 are exact below 100 ms and within 1% above.
          */
         get: operations["function_health"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/functions/{fn_id}/metrics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Function Metrics
+         * @description FNA-REQ-403: a function's numbers over time, oldest first. `bucket` is `hour` or `day` (UTC days); `group` splits
+         *     each bucket by `version` or `source`. Defaults: the last 24 hours (hourly) or 30 days (daily); at most 31 days of
+         *     hours or 400 days of days. Same figures as /health, from the same totals, which outlive the raw traces.
+         */
+        get: operations["function_metrics"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1605,7 +1786,8 @@ export interface paths {
         /**
          * Flag Trace
          * @description The flywheel button: a (bad) production output becomes a regression-test
-         *     row. Lands in the function's '{FLAG_DATASET_NAME}' dataset (auto-created),
+         *     row. Lands in the function's '{FLAG_DATASET_NAME}' dataset (auto-created) unless
+         *     the caller picks a dataset of the same function, or names a new one (FNA-REQ-454),
          *     input preserved verbatim, expected left EMPTY — the user fills in what the
          *     output SHOULD have been.
          */
@@ -1931,6 +2113,82 @@ export interface paths {
         get: operations["get_async_run"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/prompts/{fn_slug}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Prompt */
+        get: operations["get_prompt"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/space-keys/scopes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Space Key Scopes */
+        get: operations["space_key_scopes"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/space-keys": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Space Keys */
+        get: operations["list_space_keys"];
+        put?: never;
+        /**
+         * Create Space Key
+         * @description Mints `fns_…`; the plaintext appears ONCE in this response and is never retrievable again.
+         */
+        post: operations["create_space_key"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/space-keys/{key_id}/revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Revoke Space Key
+         * @description Revoking takes effect on the very next request (the key is read on every call), and the hidden per-function keys
+         *     made for it are revoked with it.
+         */
+        post: operations["revoke_space_key"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2492,6 +2750,35 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/platform/price-book": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Price Book
+         * @description FNA-REQ-430: the full price book history — every (plan, meter) rate,
+         *     current and past, same "never overwritten, always a new dated row"
+         *     stance as /platform/plan-rates above.
+         */
+        get: operations["list_price_book"];
+        put?: never;
+        /**
+         * Record Price Book Entry
+         * @description Add a new dated rate for one (plan, meter) pair — never edits an
+         *     existing row (see PriceBookEntry's docstring). Backdating is allowed
+         *     deliberately, same reasoning as record_plan_rate: it's how a (plan,
+         *     meter) pair gets its very first price.
+         */
+        post: operations["record_price_book_entry"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/platform/accounts/{account_id}/credits/topup": {
         parameters: {
             query?: never;
@@ -2576,6 +2863,47 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/platform/keys/health": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Platform Key Health
+         * @description FNA-REQ-479: every platform key that is not healthy (marked invalid, expiring or expired, being throttled), with
+         *     what is wrong. Empty when all is well. Platform Home shows this.
+         */
+        get: operations["platform_key_health"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/platform/keys/alerts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Platform Key Alerts
+         * @description FNA-REQ-479: the incidents on Functional AI's keys — one per key per problem, newest first, open ones on top.
+         */
+        get: operations["platform_key_alerts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/platform/keys/{key_id}": {
         parameters: {
             query?: never;
@@ -2622,9 +2950,10 @@ export interface paths {
         put?: never;
         /**
          * Test Platform Key
-         * @description A lighter-weight test than BYOK's run_key_test (SMA-242's own scope is
-         *     list/add/rotate/test/disable/delete — a real inference probe reuses the
-         *     same resolver every real call goes through, not a second code path).
+         * @description A real check of THIS key, the same one the org's Test makes: Bedrock one tiny inference, the API-key providers
+         *     their free model-list call. It used to only confirm the key would be chosen, which said "reachable" for a key the
+         *     provider rejects. A failure is handled like a failed real call: a rejected key is marked invalid and staff alerted;
+         *     a passing test revives an invalid key and closes its alerts.
          */
         post: operations["test_platform_key"];
         delete?: never;
@@ -2718,6 +3047,315 @@ export interface paths {
         get: operations["list_judges_for_picker"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/platform/meters": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Meters */
+        get: operations["list_meters"];
+        put?: never;
+        /** Create Meter */
+        post: operations["create_meter"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/platform/meters/{name}/versions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Version History */
+        get: operations["version_history"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/platform/meters/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Edit Meter
+         * @description Never overwrites — always 201, same "edit = new version" semantics
+         *     as judges/api.py's edit_judge.
+         */
+        patch: operations["edit_meter"];
+        trace?: never;
+    };
+    "/api/platform/meters/{name}/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Set Status */
+        patch: operations["set_status"];
+        trace?: never;
+    };
+    "/api/platform/meters/{name}/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Preview Meter
+         * @description FNA-REQ-429's acceptance line: see a meter's aggregated quantity per
+         *     org, live, before anything downstream (the rating job, FNA-REQ-431)
+         *     depends on it.
+         */
+        get: operations["preview_meter"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/platform/models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Registry Models */
+        get: operations["list_registry_models"];
+        put?: never;
+        /** Add Registry Model */
+        post: operations["add_registry_model"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/platform/models/{model_id}/pricing": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Set Registry Model Pricing */
+        patch: operations["set_registry_model_pricing"];
+        trace?: never;
+    };
+    "/api/platform/models/{model_id}/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Set Registry Model Status */
+        patch: operations["set_registry_model_status"];
+        trace?: never;
+    };
+    "/api/platform/models/{model_id}/prices": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Registry Model Price History */
+        get: operations["registry_model_price_history"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/platform/models/{model_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Edit Registry Model */
+        patch: operations["edit_registry_model"];
+        trace?: never;
+    };
+    "/api/model-access": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read Access */
+        get: operations["read_access"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/model-access/org": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Set Org List */
+        put: operations["set_org_list"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/model-access/spaces/{space_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Set Space List */
+        put: operations["set_space_list"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/platform/runtime-usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Runtime Usage Summary */
+        get: operations["runtime_usage_summary"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/experiments/{exp_id}/user-run/rows": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * User Run Rows
+         * @description The rows your code should run, in order. Only the inputs are given out (never the expected answers).
+         */
+        get: operations["user_run_rows"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/experiments/{exp_id}/user-run/rows/{row}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * User Run Send Row
+         * @description Send what your code produced for one row. Sending the same row (and repeat) again replaces it.
+         */
+        put: operations["user_run_send_row"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/experiments/{exp_id}/user-run/finish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * User Run Finish
+         * @description Say you are done: we score everything that arrived. Rows you never sent show as "not run", not as failures.
+         */
+        post: operations["user_run_finish"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2861,6 +3499,27 @@ export interface paths {
         put?: never;
         /** Decline Request */
         post: operations["decline_request"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/tools/openapi-preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Openapi Preview
+         * @description FNA-REQ-491: read one operation's argument and response shapes out of a spec, so the tool form can offer the
+         *     response shape for the person to confirm. Nothing is stored and nothing is called.
+         */
+        post: operations["openapi_preview"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3109,6 +3768,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/rows/{row_id}/tool-mock-proposals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Propose Tool Mock */
+        post: operations["propose_tool_mock"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/functions/{fn_id}/baseline": {
         parameters: {
             query?: never;
@@ -3137,6 +3813,128 @@ export interface paths {
         put?: never;
         /** Accept Baseline */
         post: operations["accept_baseline"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/versions/{version_id}/drift-baseline": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Drift Baseline */
+        get: operations["get_drift_baseline"];
+        put?: never;
+        /**
+         * Pin Drift Baseline
+         * @description Pin what this version's live answers look like now, from its live calls in the last `window_hours` (default a week).
+         *     Needs at least 30 calls with an answer. A baseline is never edited; pinning again adds a new one.
+         */
+        post: operations["pin_drift_baseline"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/versions/{version_id}/drift": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Drift
+         * @description Recent live answers (the newest 2,000 in the window) against the current baseline, field by field.
+         */
+        get: operations["get_drift"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/functions/{function_id}/drift-findings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Drift Findings
+         * @description Drift findings for a function's versions, newest first. `status` is open (default), dismissed, resolved or all.
+         */
+        get: operations["list_drift_findings"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/drift-findings/{finding_id}/dismiss": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Dismiss Drift Finding
+         * @description "Looked at it, fine": the finding stays quiet while the same fields keep drifting.
+         */
+        post: operations["dismiss_drift_finding"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/functions/{function_id}/insights": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Insights
+         * @description The groups of similar live calls from the function's latest run, biggest first, failures before topics.
+         */
+        get: operations["get_insights"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/functions/{function_id}/review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Review
+         * @description Pass rate of reviewed live calls per version and judge score over the window, and the latest failures.
+         */
+        get: operations["get_review"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -3226,6 +4024,8 @@ export interface components {
             tokens_in: number;
             /** Tokens Out */
             tokens_out: number;
+            /** Funded By */
+            funded_by?: string | null;
         };
         /** AsyncRunOut */
         AsyncRunOut: {
@@ -3363,6 +4163,8 @@ export interface components {
              * @default []
              */
             breakdown: components["schemas"]["BillingBreakdownSlice"][];
+            /** Overage Credits */
+            overage_credits?: number | null;
         };
         /** Body_upload_app_file */
         Body_upload_app_file: {
@@ -3385,6 +4187,11 @@ export interface components {
              * @default {}
              */
             expected_mapping: string;
+            /**
+             * Expected Steps Column
+             * @default
+             */
+            expected_steps_column: string;
         };
         /** Body_upload_v1_file */
         Body_upload_v1_file: {
@@ -3410,6 +4217,26 @@ export interface components {
             /** Kappa */
             kappa?: number | null;
         };
+        /** CatalogEntryOut */
+        CatalogEntryOut: {
+            /** Model */
+            model: string;
+            /** Provider */
+            provider: string;
+            /** Display Name */
+            display_name: string;
+        };
+        /** CatalogModelOut */
+        CatalogModelOut: {
+            /** Model */
+            model: string;
+            /** Provider */
+            provider: string;
+            /** Display Name */
+            display_name: string;
+            /** Tier */
+            tier?: string | null;
+        };
         /** CatalogueEntryOut */
         CatalogueEntryOut: {
             /** Name */
@@ -3430,6 +4257,59 @@ export interface components {
             needs_label?: string | null;
         } & {
             [key: string]: unknown;
+        };
+        /**
+         * CheckResultItemOut
+         * @description FNA-REQ-523: one score's result for one row of an experiment (one repeat, one model, one version).
+         */
+        CheckResultItemOut: {
+            /** Row */
+            row: number;
+            /** Row Tags */
+            row_tags?: string[];
+            /** Input */
+            input?: {
+                [key: string]: unknown;
+            };
+            /** Version Id */
+            version_id: number;
+            /** Model */
+            model: string;
+            /** Temperature */
+            temperature: number;
+            /** Repeat */
+            repeat: number;
+            /** Score Id */
+            score_id: number;
+            /** Score Name */
+            score_name: string;
+            /** Rule */
+            rule: string;
+            /**
+             * Result
+             * @enum {string}
+             */
+            result: "passed" | "failed" | "not_applicable" | "not_run";
+            /** Score */
+            score?: number | null;
+            /**
+             * Feedback
+             * @default
+             */
+            feedback: string;
+            /** Trace Id */
+            trace_id?: string | null;
+        };
+        /** CheckResultsOut */
+        CheckResultsOut: {
+            /** Total */
+            total: number;
+            /** Limit */
+            limit: number;
+            /** Offset */
+            offset: number;
+            /** Items */
+            items: components["schemas"]["CheckResultItemOut"][];
         };
         /** ConsoleOut */
         ConsoleOut: {
@@ -3532,6 +4412,29 @@ export interface components {
             name?: string | null;
             /** Archived */
             archived?: boolean | null;
+        };
+        /**
+         * DefaultCheckOut
+         * @description FNA-REQ-450: one recommended score for a new Score Set, in the planner's proposal shape, with why it is there.
+         */
+        DefaultCheckOut: {
+            /** Check */
+            check: string;
+            /** Target */
+            target?: string | null;
+            /** Dimension */
+            dimension: string;
+            /**
+             * Needs
+             * @default —
+             */
+            needs: string;
+            /** Params */
+            params?: {
+                [key: string]: unknown;
+            };
+            /** Why */
+            why: string;
         };
         /** DefaultSpaceOut */
         DefaultSpaceOut: {
@@ -3688,6 +4591,154 @@ export interface components {
             /** Drafts */
             drafts: components["schemas"]["DraftOut"][];
         };
+        /** DriftBaselineListOut */
+        DriftBaselineListOut: {
+            current?: components["schemas"]["DriftBaselineOut"] | null;
+            /**
+             * History
+             * @default []
+             */
+            history: components["schemas"]["DriftBaselineOut"][];
+        };
+        /** DriftBaselineOut */
+        DriftBaselineOut: {
+            /** Id */
+            id: number;
+            /** Function Id */
+            function_id: number;
+            /** Version Id */
+            version_id: number;
+            /** Artifact Hash */
+            artifact_hash?: string | null;
+            /** Created By */
+            created_by: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Window Start
+             * Format: date-time
+             */
+            window_start: string;
+            /**
+             * Window End
+             * Format: date-time
+             */
+            window_end: string;
+            /** N Calls */
+            n_calls: number;
+        };
+        /**
+         * DriftFindingOut
+         * @description FNA-REQ-225: a live version whose answers drifted from its baseline, with a nudge to re-run evaluations.
+         */
+        DriftFindingOut: {
+            /** Id */
+            id: number;
+            /** Function Id */
+            function_id: number;
+            /** Version Id */
+            version_id: number;
+            /** Version Number */
+            version_number?: number | null;
+            /** Status */
+            status: string;
+            /** Severity */
+            severity: string;
+            /** Title */
+            title: string;
+            /** Prompt */
+            prompt: string;
+            /**
+             * Groups
+             * @default []
+             */
+            groups: string[];
+            /**
+             * Fields
+             * @default []
+             */
+            fields: {
+                [key: string]: unknown;
+            }[];
+            /**
+             * Window Start
+             * Format: date-time
+             */
+            window_start: string;
+            /**
+             * Window End
+             * Format: date-time
+             */
+            window_end: string;
+            /** N Window */
+            n_window: number;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /** DriftPinIn */
+        DriftPinIn: {
+            /**
+             * Window Hours
+             * @default 168
+             */
+            window_hours: number;
+        };
+        /**
+         * DriftReportOut
+         * @description Recent live answers against the pinned baseline, field by field. status is no_baseline, not_enough_data, ok, watch
+         *     or drifted (the worst field).
+         */
+        DriftReportOut: {
+            /** Status */
+            status: string;
+            /** Window Hours */
+            window_hours: number;
+            baseline?: components["schemas"]["DriftBaselineOut"] | null;
+            /**
+             * N Baseline
+             * @default 0
+             */
+            n_baseline: number;
+            /**
+             * N Window
+             * @default 0
+             */
+            n_window: number;
+            /** Min Calls */
+            min_calls: number;
+            /**
+             * Counts
+             * @default {}
+             */
+            counts: {
+                [key: string]: number;
+            };
+            /**
+             * Fields
+             * @default []
+             */
+            fields: {
+                [key: string]: unknown;
+            }[];
+            /** Message */
+            message?: string | null;
+            /**
+             * Ready
+             * @default false
+             */
+            ready: boolean;
+        };
         /** ExpectedIn */
         ExpectedIn: {
             /** Expected */
@@ -3743,6 +4794,12 @@ export interface components {
              * @enum {string}
              */
             tool_mode: "real" | "mocked";
+            /**
+             * Mode
+             * @default hosted
+             * @enum {string}
+             */
+            mode: "hosted" | "user_run";
         };
         /** ExperimentOut */
         ExperimentOut: {
@@ -3902,6 +4959,28 @@ export interface components {
             /** Trace Retention Days */
             trace_retention_days?: number | null;
             /**
+             * Insights Enabled
+             * @default false
+             */
+            insights_enabled: boolean;
+            /**
+             * Insights Sample Pct
+             * @default 5
+             */
+            insights_sample_pct: number;
+            /**
+             * Review Enabled
+             * @default false
+             */
+            review_enabled: boolean;
+            /**
+             * Review Sample Pct
+             * @default 2
+             */
+            review_sample_pct: number;
+            /** Live Plan Id */
+            live_plan_id?: number | null;
+            /**
              * Step Limit
              * @default 1
              */
@@ -3920,6 +4999,16 @@ export interface components {
             description?: string | null;
             /** Trace Retention Days */
             trace_retention_days?: number | null;
+            /** Insights Enabled */
+            insights_enabled?: boolean | null;
+            /** Insights Sample Pct */
+            insights_sample_pct?: number | null;
+            /** Review Enabled */
+            review_enabled?: boolean | null;
+            /** Review Sample Pct */
+            review_sample_pct?: number | null;
+            /** Live Plan Id */
+            live_plan_id?: number | null;
             /** Step Limit */
             step_limit?: number | null;
         };
@@ -4053,6 +5142,52 @@ export interface components {
              * Format: date-time
              */
             expires_at: string;
+        };
+        /**
+         * InsightGroupOut
+         * @description FNA-REQ-404: a group of similar live calls (a failure pattern or a topic) with example traces.
+         */
+        InsightGroupOut: {
+            /** Id */
+            id: number;
+            /** Kind */
+            kind: string;
+            /** Label */
+            label: string;
+            /** Size */
+            size: number;
+            /** Share */
+            share: number;
+            /**
+             * Example Trace Ids
+             * @default []
+             */
+            example_trace_ids: string[];
+            /**
+             * Examples
+             * @default []
+             */
+            examples: {
+                [key: string]: unknown;
+            }[];
+        };
+        /** InsightsOut */
+        InsightsOut: {
+            /** Enabled */
+            enabled: boolean;
+            /** Sample Pct */
+            sample_pct: number;
+            /** Last Run At */
+            last_run_at?: string | null;
+            /** Last Run */
+            last_run?: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Groups
+             * @default []
+             */
+            groups: components["schemas"]["InsightGroupOut"][];
         };
         /** InvitationAcceptedOut */
         InvitationAcceptedOut: {
@@ -4555,6 +5690,26 @@ export interface components {
             /** Token Cap */
             token_cap?: number | null;
         };
+        /** KeyProblemOut */
+        KeyProblemOut: {
+            /**
+             * Condition
+             * @enum {string}
+             */
+            condition: "invalid" | "expiring" | "throttled";
+            /** Since */
+            since?: string | null;
+            /**
+             * Detail
+             * @default
+             */
+            detail: string;
+            /**
+             * Occurrences
+             * @default 1
+             */
+            occurrences: number;
+        };
         /** KeyRotate */
         KeyRotate: {
             /** Secret */
@@ -4621,6 +5776,8 @@ export interface components {
             rate?: number | null;
             /** Credits */
             credits: number;
+            /** Credits Exact */
+            credits_exact: number;
             /** Source Type */
             source_type?: string | null;
             /** Source Id */
@@ -4683,6 +5840,11 @@ export interface components {
             organizations: components["schemas"]["SpaceRef"][];
             /** Mcp Elevated */
             mcp_elevated?: boolean | null;
+            /**
+             * No Runtime
+             * @default false
+             */
+            no_runtime: boolean;
         };
         /**
          * MeSpaceRef
@@ -4758,6 +5920,115 @@ export interface components {
             /** Spaces */
             spaces?: string[] | null;
         };
+        /** MeterCreate */
+        MeterCreate: {
+            /** Name */
+            name: string;
+            /** Source Event */
+            source_event: string;
+            /** Aggregation */
+            aggregation: string;
+            /** Unit */
+            unit: string;
+            /**
+             * Dim Filters
+             * @default {}
+             */
+            dim_filters: {
+                [key: string]: unknown;
+            };
+        };
+        /** MeterEdit */
+        MeterEdit: {
+            /** Source Event */
+            source_event?: string | null;
+            /** Aggregation */
+            aggregation?: string | null;
+            /** Unit */
+            unit?: string | null;
+            /** Dim Filters */
+            dim_filters?: {
+                [key: string]: unknown;
+            } | null;
+        };
+        /** MeterStatusPatch */
+        MeterStatusPatch: {
+            /** Status */
+            status: string;
+        };
+        /**
+         * MetricsPointOut
+         * @description FNA-REQ-403: one hour or one UTC day of a function's numbers; version_id / source are set when grouped by them.
+         */
+        MetricsPointOut: {
+            /** Calls */
+            calls: number;
+            /** Errors */
+            errors: number;
+            /** Error Rate */
+            error_rate: number;
+            /** P50 Ms */
+            p50_ms: number;
+            /** P95 Ms */
+            p95_ms: number;
+            /** Cost */
+            cost: number;
+            /** Tokens In */
+            tokens_in: number;
+            /** Tokens Out */
+            tokens_out: number;
+            /**
+             * Bucket Start
+             * Format: date-time
+             */
+            bucket_start: string;
+            /** Version Id */
+            version_id?: number | null;
+            /** Source */
+            source?: string | null;
+        };
+        /** ModelAccessIn */
+        ModelAccessIn: {
+            /** Models */
+            models?: string[] | null;
+        };
+        /** ModelAccessOut */
+        ModelAccessOut: {
+            /** Org */
+            org?: string[] | null;
+            /** Org Effective */
+            org_effective: string[];
+            /** Spaces */
+            spaces: components["schemas"]["SpaceAccessOut"][];
+            /** Catalog */
+            catalog: components["schemas"]["CatalogEntryOut"][];
+        };
+        /** ModelCreate */
+        ModelCreate: {
+            /** Model Id */
+            model_id: string;
+            /** Provider */
+            provider: string;
+            /** Display Name */
+            display_name: string;
+            /** Price In Per 1K */
+            price_in_per_1k: number;
+            /** Price Out Per 1K */
+            price_out_per_1k: number;
+            /** Tier */
+            tier?: string | null;
+            /** Sort Order */
+            sort_order?: number | null;
+        };
+        /** ModelDetailsPatch */
+        ModelDetailsPatch: {
+            /** Display Name */
+            display_name?: string | null;
+            /** Tier */
+            tier?: string | null;
+            /** Sort Order */
+            sort_order?: number | null;
+        };
         /** ModelOut */
         ModelOut: {
             /** Model */
@@ -4773,6 +6044,29 @@ export interface components {
             /** Reason */
             reason?: string | null;
         };
+        /** ModelPriceOut */
+        ModelPriceOut: {
+            /** Price In Per 1K */
+            price_in_per_1k: number;
+            /** Price Out Per 1K */
+            price_out_per_1k: number;
+            /**
+             * Effective From
+             * Format: date-time
+             */
+            effective_from: string;
+            /** Created By */
+            created_by: string;
+            /** Created By Name */
+            created_by_name?: string | null;
+        };
+        /** ModelPricingPatch */
+        ModelPricingPatch: {
+            /** Price In Per 1K */
+            price_in_per_1k: number;
+            /** Price Out Per 1K */
+            price_out_per_1k: number;
+        };
         /** ModelSpend */
         ModelSpend: {
             /** Model */
@@ -4781,6 +6075,38 @@ export interface components {
             calls: number;
             /** Cost */
             cost: number;
+        };
+        /** ModelStatusPatch */
+        ModelStatusPatch: {
+            /** Status */
+            status: string;
+        };
+        /**
+         * OpenApiPreviewIn
+         * @description FNA-REQ-491: what a pasted OpenAPI spec says about one operation, to show a person before they register it.
+         */
+        OpenApiPreviewIn: {
+            /** Openapi Spec */
+            openapi_spec: {
+                [key: string]: unknown;
+            };
+            /** Openapi Operation */
+            openapi_operation?: string | null;
+        };
+        /** OpenApiPreviewOut */
+        OpenApiPreviewOut: {
+            /** Input Schema */
+            input_schema: {
+                [key: string]: unknown;
+            };
+            /** Output Schema */
+            output_schema?: {
+                [key: string]: unknown;
+            } | null;
+            /** Method */
+            method: string;
+            /** Path */
+            path: string;
         };
         /**
          * OrgOut
@@ -4808,6 +6134,11 @@ export interface components {
             contact_name?: string | null;
             /** Contact Email */
             contact_email?: string | null;
+            /**
+             * No Runtime
+             * @default false
+             */
+            no_runtime: boolean;
         };
         /**
          * OrgRequestCreate
@@ -4860,6 +6191,8 @@ export interface components {
             contact_name?: string | null;
             /** Contact Email */
             contact_email?: string | null;
+            /** No Runtime */
+            no_runtime?: boolean | null;
         };
         /** OrgUsageByKey */
         OrgUsageByKey: {
@@ -4880,6 +6213,17 @@ export interface components {
         OrgUsageByModel: {
             /** Model */
             model: string;
+            /** Calls */
+            calls: number;
+            /** Tokens In */
+            tokens_in: number;
+            /** Tokens Out */
+            tokens_out: number;
+        };
+        /** OrgUsageByProvider */
+        OrgUsageByProvider: {
+            /** Provider */
+            provider: string;
             /** Calls */
             calls: number;
             /** Tokens In */
@@ -4925,6 +6269,33 @@ export interface components {
             /** Tokens Out */
             tokens_out: number;
         };
+        /**
+         * OrgUsageFunctionalAI
+         * @description FNA-REQ-478: how much of this org's usage ran on Functional AI's key rather than its own, by provider.
+         *     Separate from by_key and the totals above, which are the org's own keys only.
+         */
+        OrgUsageFunctionalAI: {
+            /**
+             * Calls
+             * @default 0
+             */
+            calls: number;
+            /**
+             * Tokens In
+             * @default 0
+             */
+            tokens_in: number;
+            /**
+             * Tokens Out
+             * @default 0
+             */
+            tokens_out: number;
+            /**
+             * By Provider
+             * @default []
+             */
+            by_provider: components["schemas"]["OrgUsageByProvider"][];
+        };
         /** OrgUsageOut */
         OrgUsageOut: {
             /** Calls */
@@ -4933,6 +6304,15 @@ export interface components {
             tokens_in: number;
             /** Tokens Out */
             tokens_out: number;
+            /**
+             * @default {
+             *       "calls": 0,
+             *       "tokens_in": 0,
+             *       "tokens_out": 0,
+             *       "by_provider": []
+             *     }
+             */
+            functional_ai: components["schemas"]["OrgUsageFunctionalAI"];
             /** By Key */
             by_key: components["schemas"]["OrgUsageByKey"][];
             /** By Model */
@@ -5030,6 +6410,13 @@ export interface components {
             /** Name */
             name: string;
         };
+        /** PlanDefaultsOut */
+        PlanDefaultsOut: {
+            /** Agent */
+            agent: boolean;
+            /** Checks */
+            checks: components["schemas"]["DefaultCheckOut"][];
+        };
         /**
          * PlanOut
          * @description The planner artifact across its lifecycle (gated → planned → accepted).
@@ -5098,6 +6485,10 @@ export interface components {
              * @default []
              */
             features: string[];
+            /** Monthly Fee */
+            monthly_fee?: number | null;
+            /** Overage Rate */
+            overage_rate?: number | null;
             /**
              * Effective From
              * Format: date
@@ -5108,7 +6499,8 @@ export interface components {
          * PlanRateOut
          * @description The Plan Menu (client request, 2026-09-02): one version of a named
          *     plan's terms. `features` is stored but not enforced anywhere yet — see
-         *     PlanRate's own docstring.
+         *     PlanRate's own docstring. `monthly_fee`/`overage_rate` (FNA-REQ-430):
+         *     None on any row written before this ticket — not priced yet, not zero.
          */
         PlanRateOut: {
             /** Id */
@@ -5122,6 +6514,10 @@ export interface components {
              * @default []
              */
             features: string[];
+            /** Monthly Fee */
+            monthly_fee?: number | null;
+            /** Overage Rate */
+            overage_rate?: number | null;
             /**
              * Effective From
              * Format: date
@@ -5175,6 +6571,46 @@ export interface components {
             function_name?: string | null;
             /** Function Slug */
             function_slug?: string | null;
+        };
+        /** PlatformKeyAlertOut */
+        PlatformKeyAlertOut: {
+            /** Id */
+            id: number;
+            /** Platform Key Id */
+            platform_key_id: number;
+            /** Provider */
+            provider?: string | null;
+            /** Label */
+            label?: string | null;
+            /** Key Hint */
+            key_hint?: string | null;
+            /** Condition */
+            condition: string;
+            /** Status */
+            status: string;
+            /** Detail */
+            detail: string;
+            /**
+             * Opened At
+             * Format: date-time
+             */
+            opened_at: string;
+            /**
+             * Last Seen At
+             * Format: date-time
+             */
+            last_seen_at: string;
+            /** Resolved At */
+            resolved_at?: string | null;
+            /** Occurrences */
+            occurrences: number;
+            /** Emailed At */
+            emailed_at?: string | null;
+            /**
+             * Emailed To
+             * @default
+             */
+            emailed_to: string;
         };
         /** PlatformKeyCreate */
         PlatformKeyCreate: {
@@ -5397,6 +6833,8 @@ export interface components {
             cost: number;
             /** Latency Ms */
             latency_ms: number;
+            /** Funded By */
+            funded_by?: string | null;
         };
         /** PlaygroundRun */
         PlaygroundRun: {
@@ -5418,6 +6856,47 @@ export interface components {
             context?: {
                 [key: string]: unknown;
             } | null;
+        };
+        /** PriceBookEntryCreate */
+        PriceBookEntryCreate: {
+            /** Plan */
+            plan: string;
+            /** Meter Name */
+            meter_name: string;
+            /** Credits Per Unit */
+            credits_per_unit: number;
+            /**
+             * Effective From
+             * Format: date
+             */
+            effective_from: string;
+        };
+        /**
+         * PriceBookEntryOut
+         * @description FNA-REQ-430: what one plan pays for one meter (FNA-REQ-429) — see
+         *     PriceBookEntry's own docstring for why this is a separate table from
+         *     PlanRate rather than a column on it (many meters per plan, one row
+         *     each, independently effective-dated).
+         */
+        PriceBookEntryOut: {
+            /** Id */
+            id: number;
+            /** Plan */
+            plan: string;
+            /** Meter Name */
+            meter_name: string;
+            /** Credits Per Unit */
+            credits_per_unit: number;
+            /**
+             * Effective From
+             * Format: date
+             */
+            effective_from: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
         };
         /** PriceOut */
         PriceOut: {
@@ -5450,10 +6929,107 @@ export interface components {
             /** Version */
             version: number;
         };
+        /** PromptFixApply */
+        PromptFixApply: {
+            /**
+             * Find
+             * @default
+             */
+            find: string;
+            /** Replace */
+            replace: string;
+            /**
+             * Explanation
+             * @default
+             */
+            explanation: string;
+        };
+        /**
+         * PromptFixOut
+         * @description FNA-REQ-452: one proposed edit to a version's prompt. Nothing changes until it is applied.
+         */
+        PromptFixOut: {
+            /** Finding Id */
+            finding_id: number;
+            /** Version Id */
+            version_id: number;
+            /** Find */
+            find: string;
+            /** Replace */
+            replace: string;
+            /** Explanation */
+            explanation: string;
+        };
+        /** PromptOut */
+        PromptOut: {
+            /** Function */
+            function: string;
+            /** Name */
+            name: string;
+            /** Version */
+            version: number;
+            /** Version Id */
+            version_id: number;
+            /** Live */
+            live: boolean;
+            /** Artifact Hash */
+            artifact_hash?: string | null;
+            /** Template */
+            template: string;
+            /** Substitution */
+            substitution: {
+                [key: string]: unknown;
+            };
+            /** Input Schema */
+            input_schema: {
+                [key: string]: unknown;
+            };
+            /** Output Schema */
+            output_schema: {
+                [key: string]: unknown;
+            };
+            /** Model */
+            model?: string | null;
+            settings: components["schemas"]["PromptSettings"];
+        };
+        /** PromptSettings */
+        PromptSettings: {
+            /** Temperature */
+            temperature?: number | null;
+        };
         /** RateCeilingIn */
         RateCeilingIn: {
             /** Rate Ceiling Per Min */
             rate_ceiling_per_min?: number | null;
+        };
+        /** RegistryModelOut */
+        RegistryModelOut: {
+            /** Model Id */
+            model_id: string;
+            /** Provider */
+            provider: string;
+            /** Display Name */
+            display_name: string;
+            /** Status */
+            status: string;
+            /** Price In Per 1K */
+            price_in_per_1k: number;
+            /** Price Out Per 1K */
+            price_out_per_1k: number;
+            /** Sort Order */
+            sort_order: number;
+            /** Tier */
+            tier?: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
         };
         /** RemovePlanScoreOut */
         RemovePlanScoreOut: {
@@ -5461,6 +7037,120 @@ export interface components {
             score_id: number;
             /** Outcome */
             outcome: string;
+        };
+        /**
+         * ReviewDropOut
+         * @description FNA-REQ-537: a check whose pass rate over the last 24 hours fell well below the 7 days before.
+         */
+        ReviewDropOut: {
+            /** Score Name */
+            score_name: string;
+            /** Baseline */
+            baseline: number;
+            /** Recent */
+            recent: number;
+            /** Reviewed Recent */
+            reviewed_recent: number;
+            /** Reviewed Baseline */
+            reviewed_baseline: number;
+        };
+        /** ReviewFailureOut */
+        ReviewFailureOut: {
+            /** Trace Id */
+            trace_id: string;
+            /** Version Id */
+            version_id: number;
+            /** Score Name */
+            score_name: string;
+            /** Reason */
+            reason: string;
+            /** Judge */
+            judge?: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+        };
+        /** ReviewOut */
+        ReviewOut: {
+            /** Live Plan Id */
+            live_plan_id?: number | null;
+            /** Live Plan Name */
+            live_plan_name?: string | null;
+            /**
+             * Series
+             * @default []
+             */
+            series: components["schemas"]["ReviewSeriesPoint"][];
+            /**
+             * Drops
+             * @default []
+             */
+            drops: components["schemas"]["ReviewDropOut"][];
+            /** Enabled */
+            enabled: boolean;
+            /** Sample Pct */
+            sample_pct: number;
+            /** Window Hours */
+            window_hours: number;
+            /** Judge Scores */
+            judge_scores: number;
+            /** Last Run At */
+            last_run_at?: string | null;
+            /** Last Run */
+            last_run?: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Scores
+             * @default []
+             */
+            scores: components["schemas"]["ReviewScoreOut"][];
+            /**
+             * Failures
+             * @default []
+             */
+            failures: components["schemas"]["ReviewFailureOut"][];
+        };
+        /**
+         * ReviewScoreOut
+         * @description FNA-REQ-405: how often live calls of one version passed one judge score.
+         */
+        ReviewScoreOut: {
+            /** Score Id */
+            score_id: number;
+            /** Name */
+            name: string;
+            /** Version Id */
+            version_id: number;
+            /** Version Number */
+            version_number?: number | null;
+            /** Reviewed */
+            reviewed: number;
+            /** Passed */
+            passed: number;
+            /** Pass Rate */
+            pass_rate: number;
+        };
+        /**
+         * ReviewSeriesPoint
+         * @description FNA-REQ-537: one day's pass rate for one check on live traffic.
+         */
+        ReviewSeriesPoint: {
+            /**
+             * Day
+             * Format: date
+             */
+            day: string;
+            /** Score Name */
+            score_name: string;
+            /** Reviewed */
+            reviewed: number;
+            /** Passed */
+            passed: number;
+            /** Pass Rate */
+            pass_rate: number;
         };
         /**
          * RoleCatalogueOut
@@ -5523,6 +7213,19 @@ export interface components {
              */
             note: string;
         };
+        /** RowAcceptedOut */
+        RowAcceptedOut: {
+            /** Row */
+            row: number;
+            /** Repeat */
+            repeat: number;
+            /** Replaced */
+            replaced: boolean;
+            /** Received */
+            received: number;
+            /** Expected */
+            expected: number;
+        };
         /** RowIn */
         RowIn: {
             /** Input */
@@ -5542,6 +7245,20 @@ export interface components {
             source: string;
             /** Tool Mocks */
             tool_mocks?: {
+                [key: string]: unknown;
+            } | null;
+            /** Tool Sim */
+            tool_sim?: {
+                [key: string]: unknown;
+            } | null;
+            /** Expected Steps */
+            expected_steps?: {
+                [key: string]: unknown;
+            }[] | null;
+            /** Expected Outcome */
+            expected_outcome?: "escalated" | null;
+            /** Flagged Output */
+            flagged_output?: {
                 [key: string]: unknown;
             } | null;
         };
@@ -5570,6 +7287,69 @@ export interface components {
             tool_mocks?: {
                 [key: string]: unknown;
             } | null;
+            /** Tool Sim */
+            tool_sim?: {
+                [key: string]: unknown;
+            } | null;
+            /** Expected Steps */
+            expected_steps?: {
+                [key: string]: unknown;
+            }[] | null;
+            /** Expected Outcome */
+            expected_outcome?: string | null;
+            /** Flagged Output */
+            flagged_output?: {
+                [key: string]: unknown;
+            } | null;
+        };
+        /**
+         * RowResultIn
+         * @description What the customer's code reports for one row. Everything is optional but `output` or `error` should say what
+         *     happened; `repeat` is 1-based (1 when the experiment has no repeats).
+         */
+        RowResultIn: {
+            /** Output */
+            output?: {
+                [key: string]: unknown;
+            } | null;
+            /** Steps */
+            steps?: {
+                [key: string]: unknown;
+            }[];
+            /**
+             * Model
+             * @default user-run
+             */
+            model: string;
+            /**
+             * Tokens In
+             * @default 0
+             */
+            tokens_in: number;
+            /**
+             * Tokens Out
+             * @default 0
+             */
+            tokens_out: number;
+            /**
+             * Cost
+             * @default 0
+             */
+            cost: number;
+            /**
+             * Latency Ms
+             * @default 0
+             */
+            latency_ms: number;
+            /** Success */
+            success?: boolean | null;
+            /** Error */
+            error?: string | null;
+            /**
+             * Repeat
+             * @default 1
+             */
+            repeat: number;
         };
         /** RowUpdate */
         RowUpdate: {
@@ -5587,6 +7367,16 @@ export interface components {
             tool_mocks?: {
                 [key: string]: unknown;
             } | null;
+            /** Tool Sim */
+            tool_sim?: {
+                [key: string]: unknown;
+            } | null;
+            /** Expected Steps */
+            expected_steps?: {
+                [key: string]: unknown;
+            }[] | null;
+            /** Expected Outcome */
+            expected_outcome?: "escalated" | null;
         };
         /** RunMetaOut */
         RunMetaOut: {
@@ -5602,6 +7392,8 @@ export interface components {
             tokens_out: number;
             /** Trace Id */
             trace_id: string;
+            /** Funded By */
+            funded_by?: string | null;
         };
         /** RunOut */
         RunOut: {
@@ -5618,6 +7410,15 @@ export interface components {
                 [key: string]: unknown;
             } | null;
             meta: components["schemas"]["RunMetaOut"];
+        };
+        /** RuntimeUsageOut */
+        RuntimeUsageOut: {
+            /** Total */
+            total: number;
+            /** Groups */
+            groups: components["schemas"]["UsageGroupOut"][];
+            /** Recent */
+            recent: components["schemas"]["UsageRowOut"][];
         };
         /** ScoreCreate */
         ScoreCreate: {
@@ -5793,6 +7594,48 @@ export interface components {
              */
             created_at: string;
         };
+        /** SourceKeyOut */
+        SourceKeyOut: {
+            /** Id */
+            id: number;
+            /** Label */
+            label: string;
+            /** Key Hint */
+            key_hint: string;
+            /** Status */
+            status: string;
+            /** Expires At */
+            expires_at?: string | null;
+        };
+        /** SourceOut */
+        SourceOut: {
+            /** Provider */
+            provider: string;
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "own" | "functional_ai";
+            own_key?: components["schemas"]["SourceKeyOut"] | null;
+            /** Platform Available */
+            platform_available: boolean;
+            /** Funded By */
+            funded_by?: ("own" | "functional_ai") | null;
+            /** Key Label */
+            key_label?: string | null;
+            /** Blocked Reason */
+            blocked_reason?: string | null;
+            /** Blocked Code */
+            blocked_code?: ("no_key" | "key_unusable" | "platform_unavailable") | null;
+        };
+        /** SourcePut */
+        SourcePut: {
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "own" | "functional_ai";
+        };
         /** SourceSpend */
         SourceSpend: {
             /** Source */
@@ -5801,6 +7644,24 @@ export interface components {
             calls: number;
             /** Cost */
             cost: number;
+        };
+        /** SourcesOut */
+        SourcesOut: {
+            /** Can Change */
+            can_change: boolean;
+            /** Providers */
+            providers: components["schemas"]["SourceOut"][];
+        };
+        /** SpaceAccessOut */
+        SpaceAccessOut: {
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /** Models */
+            models?: string[] | null;
+            /** Effective */
+            effective: string[];
         };
         /** SpaceCreate */
         SpaceCreate: {
@@ -5844,6 +7705,74 @@ export interface components {
             p95_ms: number;
             /** Cost */
             cost: number;
+        };
+        /** SpaceKeyIn */
+        SpaceKeyIn: {
+            /** Name */
+            name: string;
+            /** Scopes */
+            scopes: string[];
+        };
+        /** SpaceKeyMintedOut */
+        SpaceKeyMintedOut: {
+            /** Id */
+            id: number;
+            /** Name */
+            name: string;
+            /** Hint */
+            hint: string;
+            /** Scopes */
+            scopes: string[];
+            /** Status */
+            status: string;
+            /** Created By */
+            created_by: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Last Used At */
+            last_used_at?: string | null;
+            /** Revoked At */
+            revoked_at?: string | null;
+            /** Key */
+            key: string;
+        };
+        /** SpaceKeyOut */
+        SpaceKeyOut: {
+            /** Id */
+            id: number;
+            /** Name */
+            name: string;
+            /** Hint */
+            hint: string;
+            /** Scopes */
+            scopes: string[];
+            /** Status */
+            status: string;
+            /** Created By */
+            created_by: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Last Used At */
+            last_used_at?: string | null;
+            /** Revoked At */
+            revoked_at?: string | null;
+        };
+        /** SpaceKeyScopeOut */
+        SpaceKeyScopeOut: {
+            /** Scope */
+            scope: string;
+            /** Label */
+            label: string;
+            /** Description */
+            description: string;
+            /** Risk */
+            risk: string;
         };
         /** SpaceRef */
         SpaceRef: {
@@ -5998,6 +7927,10 @@ export interface components {
             input_schema?: {
                 [key: string]: unknown;
             } | null;
+            /** Output Schema */
+            output_schema?: {
+                [key: string]: unknown;
+            } | null;
             /** Openapi Spec */
             openapi_spec?: {
                 [key: string]: unknown;
@@ -6033,6 +7966,39 @@ export interface components {
                 [key: string]: unknown;
             } | null;
         };
+        /** ToolMockProposalIn */
+        ToolMockProposalIn: {
+            /** Tool */
+            tool: string;
+            /**
+             * Method
+             * @enum {string}
+             */
+            method: "run_once" | "reuse" | "synthesise";
+            /** Args */
+            args?: {
+                [key: string]: unknown;
+            };
+            /** Trace Id */
+            trace_id?: string | null;
+            /**
+             * Variant
+             * @default typical
+             * @enum {string}
+             */
+            variant: "typical" | "empty" | "error" | "missing_optional" | "extreme";
+        };
+        /** ToolMockProposalOut */
+        ToolMockProposalOut: {
+            /** Tool */
+            tool: string;
+            /** Method */
+            method: string;
+            /** Proposal */
+            proposal: unknown;
+            /** Source */
+            source: string;
+        };
         /** ToolOut */
         ToolOut: {
             /** Id */
@@ -6047,6 +8013,10 @@ export interface components {
             input_schema: {
                 [key: string]: unknown;
             };
+            /** Output Schema */
+            output_schema?: {
+                [key: string]: unknown;
+            } | null;
             /** Config Schema */
             config_schema?: {
                 [key: string]: unknown;
@@ -6128,6 +8098,10 @@ export interface components {
             contract_match?: boolean | null;
             /** Mismatch Detail */
             mismatch_detail?: string | null;
+            /** Output Schema Hint */
+            output_schema_hint?: {
+                [key: string]: unknown;
+            } | null;
         };
         /** ToolUpdate */
         ToolUpdate: {
@@ -6135,6 +8109,10 @@ export interface components {
             description?: string | null;
             /** Input Schema */
             input_schema?: {
+                [key: string]: unknown;
+            } | null;
+            /** Output Schema */
+            output_schema?: {
                 [key: string]: unknown;
             } | null;
             /** Effect */
@@ -6193,7 +8171,7 @@ export interface components {
             /** Function Id */
             function_id: number;
             /** Version Id */
-            version_id: number;
+            version_id?: number | null;
             /** Artifact Hash */
             artifact_hash?: string | null;
             /** Experiment Id */
@@ -6212,6 +8190,10 @@ export interface components {
             execution_target?: string | null;
             /** Execution Reason */
             execution_reason?: string | null;
+            /** Funded By */
+            funded_by?: string | null;
+            /** Key Id */
+            key_id?: number | null;
             /** Tokens In */
             tokens_in: number;
             /** Tokens Out */
@@ -6232,9 +8214,9 @@ export interface components {
             /** Schema Version */
             schema_version: number;
             /** Input */
-            input: {
+            input?: {
                 [key: string]: unknown;
-            };
+            } | null;
             /** Output */
             output?: {
                 [key: string]: unknown;
@@ -6243,6 +8225,22 @@ export interface components {
             temperature?: number | null;
             /** Rollout Id */
             rollout_id?: number | null;
+            /**
+             * Payload Unavailable
+             * @default false
+             */
+            payload_unavailable: boolean;
+        };
+        /**
+         * TraceFlagIn
+         * @description FNA-REQ-454: where a flagged call goes. Neither given: the function's automatic "production-flagged" dataset,
+         *     as before. At most one of the two.
+         */
+        TraceFlagIn: {
+            /** Dataset Id */
+            dataset_id?: number | null;
+            /** New Dataset Name */
+            new_dataset_name?: string | null;
         };
         /** TraceFlagOut */
         TraceFlagOut: {
@@ -6274,7 +8272,7 @@ export interface components {
             /** Function Id */
             function_id: number;
             /** Version Id */
-            version_id: number;
+            version_id?: number | null;
             /** Artifact Hash */
             artifact_hash?: string | null;
             /** Experiment Id */
@@ -6293,6 +8291,10 @@ export interface components {
             execution_target?: string | null;
             /** Execution Reason */
             execution_reason?: string | null;
+            /** Funded By */
+            funded_by?: string | null;
+            /** Key Id */
+            key_id?: number | null;
             /** Tokens In */
             tokens_in: number;
             /** Tokens Out */
@@ -6320,6 +8322,21 @@ export interface components {
             /** Source */
             source: string;
         };
+        /** UnhealthyKeyOut */
+        UnhealthyKeyOut: {
+            /** Id */
+            id: number;
+            /** Provider */
+            provider: string;
+            /** Label */
+            label: string;
+            /** Key Hint */
+            key_hint: string;
+            /** Status */
+            status: string;
+            /** Problems */
+            problems: components["schemas"]["KeyProblemOut"][];
+        };
         /**
          * UpgradeRestoreOut
          * @description The other half of DowngradeSweepOut — which archived custom roles
@@ -6339,6 +8356,79 @@ export interface components {
             /** Errors */
             errors: {
                 [key: string]: unknown;
+            }[];
+        };
+        /** UsageGroupOut */
+        UsageGroupOut: {
+            /** Ran On */
+            ran_on: string;
+            /** Source */
+            source: string;
+            /** Status */
+            status: string;
+            /** Calls */
+            calls: number;
+            /** Elapsed S */
+            elapsed_s: number;
+            /** Cpu S */
+            cpu_s?: number | null;
+            /** Aws Vcpu Hours */
+            aws_vcpu_hours?: number | null;
+            /** Aws Memory Gb Hours */
+            aws_memory_gb_hours?: number | null;
+            /** Latest */
+            latest?: string | null;
+        };
+        /** UsageRowOut */
+        UsageRowOut: {
+            /**
+             * When
+             * Format: date-time
+             */
+            when: string;
+            /** Org */
+            org: string;
+            /** Function Id */
+            function_id?: number | null;
+            /** Source */
+            source: string;
+            /** Ran On */
+            ran_on: string;
+            /** Status */
+            status: string;
+            /** Elapsed Ms */
+            elapsed_ms: number;
+            /** Cpu Ms */
+            cpu_ms?: number | null;
+            /** Aws Vcpu Hours */
+            aws_vcpu_hours?: number | null;
+            /** Aws Memory Gb Hours */
+            aws_memory_gb_hours?: number | null;
+        };
+        /** UserRunRowOut */
+        UserRunRowOut: {
+            /** Row */
+            row: number;
+            /** Input */
+            input: {
+                [key: string]: unknown;
+            };
+        };
+        /** UserRunRowsOut */
+        UserRunRowsOut: {
+            /** Experiment Id */
+            experiment_id: number;
+            /** Status */
+            status: string;
+            /** Total Rows */
+            total_rows: number;
+            /** Repeats */
+            repeats: number;
+            /** Rows */
+            rows: components["schemas"]["UserRunRowOut"][];
+            /** Received */
+            received: {
+                [key: string]: number;
             }[];
         };
         /** ValidationError */
@@ -9054,6 +11144,132 @@ export interface operations {
             };
         };
     };
+    suggest_prompt_fix: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                finding_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PromptFixOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    apply_prompt_fix: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                finding_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PromptFixApply"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VersionOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_check_results: {
+        parameters: {
+            query?: {
+                score_id?: number | null;
+                result?: ("passed" | "failed" | "not_applicable" | "not_run") | null;
+                row?: number | null;
+                model?: string | null;
+                version_id?: number | null;
+                limit?: number;
+                offset?: number;
+            };
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                exp_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CheckResultsOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_findings: {
         parameters: {
             query?: never;
@@ -9515,6 +11731,84 @@ export interface operations {
             };
         };
     };
+    key_sources: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourcesOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_key_source: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                provider: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SourcePut"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourceOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     keys_console: {
         parameters: {
             query?: never;
@@ -9745,6 +12039,42 @@ export interface operations {
             };
         };
     };
+    model_catalog: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CatalogModelOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     run_gate: {
         parameters: {
             query?: never;
@@ -9852,6 +12182,44 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PlanOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    plan_defaults: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                v_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlanDefaultsOut"];
                 };
             };
             /** @description Validation Error */
@@ -10325,6 +12693,10 @@ export interface operations {
                 tool?: string | null;
                 since?: string | null;
                 until?: string | null;
+                version_id?: number | null;
+                key_id?: number | null;
+                has_error?: boolean | null;
+                q?: string | null;
             };
             header?: {
                 authorization?: string | null;
@@ -10439,6 +12811,51 @@ export interface operations {
             };
         };
     };
+    function_metrics: {
+        parameters: {
+            query?: {
+                bucket?: string;
+                group?: string;
+                since?: string | null;
+                until?: string | null;
+                source?: string | null;
+                version_id?: number | null;
+            };
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                fn_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MetricsPointOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     flag_trace: {
         parameters: {
             query?: never;
@@ -10455,7 +12872,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["TraceFlagIn"] | null;
+            };
+        };
         responses: {
             /** @description Successful Response */
             201: {
@@ -11162,6 +13583,191 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AsyncRunOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_prompt: {
+        parameters: {
+            query?: {
+                version?: string;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                fn_slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PromptOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    space_key_scopes: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SpaceKeyScopeOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_space_keys: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SpaceKeyOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_space_key: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SpaceKeyIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SpaceKeyMintedOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    revoke_space_key: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                key_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SpaceKeyOut"];
                 };
             };
             /** @description Validation Error */
@@ -12283,6 +14889,82 @@ export interface operations {
             };
         };
     };
+    list_price_book: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PriceBookEntryOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    record_price_book_entry: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PriceBookEntryCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PriceBookEntryOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     comp_credits: {
         parameters: {
             query?: never;
@@ -12470,6 +15152,81 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PlatformKeyOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    platform_key_health: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UnhealthyKeyOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    platform_key_alerts: {
+        parameters: {
+            query?: {
+                open_only?: boolean;
+                limit?: number;
+            };
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlatformKeyAlertOut"][];
                 };
             };
             /** @description Validation Error */
@@ -12862,6 +15619,757 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_meters: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_meter: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MeterCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    version_history: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    edit_meter: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MeterEdit"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_status: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MeterStatusPatch"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    preview_meter: {
+        parameters: {
+            query?: {
+                days?: number;
+            };
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_registry_models: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RegistryModelOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    add_registry_model: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ModelCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RegistryModelOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_registry_model_pricing: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                model_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ModelPricingPatch"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RegistryModelOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_registry_model_status: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                model_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ModelStatusPatch"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RegistryModelOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    registry_model_price_history: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                model_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelPriceOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    edit_registry_model: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                model_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ModelDetailsPatch"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RegistryModelOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_access: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelAccessOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_org_list: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ModelAccessIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelAccessOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_space_list: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                space_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ModelAccessIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelAccessOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    runtime_usage_summary: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RuntimeUsageOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    user_run_rows: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                exp_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserRunRowsOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    user_run_send_row: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                exp_id: number;
+                row: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RowResultIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RowAcceptedOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    user_run_finish: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                exp_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExperimentOut"];
                 };
             };
             /** @description Validation Error */
@@ -13288,6 +16796,46 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["OrgRequestOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    openapi_preview: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OpenApiPreviewIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OpenApiPreviewOut"];
                 };
             };
             /** @description Validation Error */
@@ -13894,6 +17442,48 @@ export interface operations {
             };
         };
     };
+    propose_tool_mock: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                row_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ToolMockProposalIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ToolMockProposalOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_baseline: {
         parameters: {
             query?: never;
@@ -13957,6 +17547,282 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["BaselineOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_drift_baseline: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                version_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DriftBaselineListOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    pin_drift_baseline: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                version_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["DriftPinIn"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DriftBaselineOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_drift: {
+        parameters: {
+            query?: {
+                window_hours?: number;
+            };
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                version_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DriftReportOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_drift_findings: {
+        parameters: {
+            query?: {
+                status?: string;
+            };
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                function_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DriftFindingOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    dismiss_drift_finding: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                finding_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DriftFindingOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_insights: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                function_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InsightsOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_review: {
+        parameters: {
+            query?: {
+                window_hours?: number;
+            };
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                function_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewOut"];
                 };
             };
             /** @description Validation Error */

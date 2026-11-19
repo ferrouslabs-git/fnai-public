@@ -38,10 +38,13 @@ import {
 } from "./definition.js";
 
 export { DefinitionError };
+import { captureTrace } from "./tracing.js";
+export { currentTrace, flushTraces, initTracing, Trace, trace, traced, traceStats, wrapAnthropic, wrapOpenAI } from "./tracing.js";
+export type { TraceOptions, TracingOptions } from "./tracing.js";
 
 type S = components["schemas"];
 
-export const VERSION = "0.9.0";
+export const VERSION = "0.11.0";
 const DEFAULT_TIMEOUT_MS = 90_000; // server caps execution at 60s; transport headroom
 
 export class FnaiError extends Error {
@@ -95,6 +98,35 @@ function requireId(value: unknown, field: string): void {
   if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
     throw new Error(`${field} must be a positive integer id, got ${JSON.stringify(value)}.`);
   }
+}
+
+// FNA-REQ-465: every function starts at a step limit of 1. A tool call is a step and so is the final answer, so an
+// agent left at 1 can never use a tool and then answer: each run ends `partial` (guard:steps) with no output. The
+// default stays; we say so, once per function per process, when an agent is saved or tried in the playground.
+const stepLimitWarned = new Set<number>();
+
+/** A version's mode, from either snapshot shape (canvas `impl`, or the v2 `implementation.execution.mode`). */
+function isAgentSnapshot(snap: unknown): boolean {
+  const s = snap as Json | null | undefined;
+  if (!s || typeof s !== "object") return false;
+  const execution = (s.implementation as Json | undefined)?.execution as Json | undefined;
+  const mode = execution?.mode ?? s.impl;
+  return mode === "agent";
+}
+
+/** Warn (never throw) when an agent function is still at step limit 1. Advice, not a gate: a failed lookup, or a
+ *  prompt function, says nothing. */
+async function warnIfAgentAtDefaultStepLimit(h: Http, fnId: unknown, snap: unknown): Promise<void> {
+  if (typeof fnId !== "number" || stepLimitWarned.has(fnId) || !isAgentSnapshot(snap)) return;
+  try {
+    const fn = await h.request<Json>("GET", `/api/functions/${fnId}`);
+    if (Number(fn?.step_limit ?? 1) > 1) return;
+    stepLimitWarned.add(fnId);
+    console.warn(
+      "fnai: this agent can take only 1 step, so it can't use a tool and then answer; every run will end " +
+      "`partial` (guard:steps) with no output. Raise the step limit first: " +
+      `c.functions.update(${fnId}, { step_limit: <n> })  (n up to ${fn?.step_limit_max ?? 12}).`);
+  } catch { /* the warning must never break a save or a run */ }
 }
 
 class Http {
@@ -255,6 +287,21 @@ export class RunResult {
   get traceId(): string | undefined {
     return this.meta?.trace_id;
   }
+
+  /** FNA-REQ-477: whose provider key paid for the call — "own" (your organization's), "functional_ai" (Functional AI's,
+   *  because your organization chose it), or null (a test model that uses no key). */
+  get fundedBy(): "own" | "functional_ai" | null {
+    return (this.meta?.funded_by ?? null) as "own" | "functional_ai" | null;
+  }
+}
+
+/** UAT until production (https://app.fnai.dev) launches; the default switches then (FNA-REQ-461).
+ *  Point elsewhere with FNAI_BASE_URL or baseUrl. */
+export const DEFAULT_BASE_URL = "https://uat.fnai.dev";
+
+function resolveBaseUrl(explicit?: string): string {
+  const proc = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process;
+  return explicit || proc?.env?.FNAI_BASE_URL || DEFAULT_BASE_URL;
 }
 
 export interface FunctionOptions {
@@ -268,7 +315,7 @@ export class FnaiFunction {
   private http: Http;
 
   constructor(public slug: string, opts: FunctionOptions) {
-    this.http = new Http(opts.baseUrl ?? "http://localhost:8000",
+    this.http = new Http(resolveBaseUrl(opts.baseUrl),
                          opts.apiKey, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS);
   }
 
@@ -576,7 +623,16 @@ class Versions {
     requireField(opts.model ?? "mock-small", "model");
     const body: Json = { input: opts.input, model: opts.model ?? "mock-small" };
     if (opts.temperature !== undefined) body.temperature = opts.temperature;
-    return this.h.request("POST", `/api/versions/${vId}/playground/run`, body);
+    return this.warnStepLimit(vId).then(
+      () => this.h.request<S["PlaygroundOut"]>("POST", `/api/versions/${vId}/playground/run`, body));
+  }
+
+  /** FNA-REQ-465: say so before a run that cannot use its tools. Never rejects. */
+  private async warnStepLimit(vId: number): Promise<void> {
+    try {
+      const v = await this.h.request<Json>("GET", `/api/versions/${vId}`);
+      await warnIfAgentAtDefaultStepLimit(this.h, v?.function_id, v?.snapshot);
+    } catch { /* advice only */ }
   }
 
   gate(vId: number): Promise<S["PlanOut"]> {
@@ -749,6 +805,24 @@ class Experiments {
     requireId(expId, "expId");
     return this.h.request("GET", `/api/experiments/${expId}/findings`);
   }
+
+  /** Which row passed or failed each score, and why: one entry per row x repeat x model x version x score,
+   *  failures first. `row` is its number in the dataset version (from 1); `input` has sensitive fields hidden;
+   *  `result` is "passed" | "failed" | "not_applicable"; `feedback` is the check's own explanation. Reads every page. */
+  async checkResults(expId: number, filters: {
+    scoreId?: number; result?: "passed" | "failed" | "not_applicable"; row?: number; model?: string; versionId?: number;
+  } = {}): Promise<S["CheckResultItemOut"][]> {
+    requireId(expId, "expId");
+    const q = { score_id: filters.scoreId, result: filters.result, row: filters.row, model: filters.model,
+                version_id: filters.versionId };
+    const items: S["CheckResultItemOut"][] = [];
+    for (;;) {
+      const page: S["CheckResultsOut"] = await this.h.request("GET", `/api/experiments/${expId}/check-results`,
+        undefined, { ...q, limit: 500, offset: items.length });
+      items.push(...(page.items ?? []));
+      if (!page.items?.length || items.length >= page.total) return items;
+    }
+  }
 }
 
 class Scores {
@@ -790,11 +864,171 @@ class Eval {
   experiments: Experiments;
   scores: Scores;
 
-  constructor(h: Http) {
+  constructor(private h: Http) {
     this.plans = new Plans(h);
     this.experiments = new Experiments(h);
     this.scores = new Scores(h);
   }
+
+  /** Run a dataset through your own code and get it scored (FNA-REQ-530). Same as evaluate(...). */
+  run(fn: number | string, opts: EvalOptions): Promise<EvalResult> {
+    return runEval(this.h, fn, opts);
+  }
+}
+
+export interface EvalOptions {
+  /** Your code: takes a row's input, returns the answer (an object, or any value — wrapped as { output }). May be async. */
+  task: (input: Json) => unknown | Promise<unknown>;
+  /** Dataset id or name (default: the newest); a fresh snapshot is taken. */
+  dataset?: number | string;
+  /** Use this snapshot instead of taking one. */
+  snapshot?: number;
+  /** The Score Set id (default: every check on the function). */
+  scoreSet?: number;
+  name?: string;
+  version?: number;
+  repeats?: number;
+  /** Rows run at once (default 1). */
+  concurrency?: number;
+  /** Called after each row is sent. */
+  progress?: (done: number, total: number, row: number, ok: boolean) => void;
+  /** Carry on an experiment that stopped part-way: rows already sent are skipped. */
+  resume?: number;
+  /** How long to wait for scoring to finish after the last result is sent (default 10 minutes). */
+  waitTimeoutMs?: number;
+}
+
+export interface EvalResult {
+  experiment_id: number;
+  function_id: number;
+  status: string | undefined;
+  rows: number;
+  repeats: number;
+  sent: number;
+  task_failed: number;
+  not_run: number;
+  pass_rate: number | null;
+  checks: { score: unknown; model: unknown; pass_rate: unknown; n: unknown }[];
+  url: string;
+}
+
+const RETRY_PUT = [500, 1000, 2000];
+
+async function putWithRetry(h: Http, path: string, body: Json): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await h.request("PUT", path, body);
+      return;
+    } catch (e) {
+      const status = e instanceof FnaiError ? e.status : 0;
+      const retryable = status === 0 || status === 408 || status === 425 || status === 429 || status >= 500;
+      if (!retryable || attempt >= RETRY_PUT.length) throw e;
+      await new Promise((r) => setTimeout(r, evalTuning.retryMs[attempt] ?? RETRY_PUT[attempt]));
+    }
+  }
+}
+
+/** Overridable in tests. */
+export const evalTuning = { retryMs: RETRY_PUT, pollMs: 2000 };
+
+async function runEval(h: Http, fn: number | string, o: EvalOptions): Promise<EvalResult> {
+  if (typeof o.task !== "function") throw new Error("task must be a function that takes a row's input and returns the answer.");
+  const concurrency = o.concurrency ?? 1;
+  if (!(concurrency >= 1)) throw new Error("concurrency must be at least 1.");
+  const fnId = await resolveFunctionId(h, fn);
+  let expId: number;
+  if (o.resume !== undefined) {
+    expId = o.resume;
+  } else {
+    let snapshot = o.snapshot;
+    if (snapshot === undefined) {
+      const sets = (await h.request<Json[]>("GET", `/api/functions/${fnId}/datasets`)) ?? [];
+      let dsId: number | undefined;
+      if (typeof o.dataset === "number") dsId = o.dataset;
+      else if (o.dataset === undefined) {
+        if (!sets.length) throw new Error("this function has no datasets yet — create one in the app, or pass dataset: <id or name>.");
+        dsId = sets[sets.length - 1]!.id as number;
+      } else {
+        const found = sets.find((d) => d.name === o.dataset);
+        if (!found) throw new Error(`no dataset named ${JSON.stringify(o.dataset)} on this function — choices: ${JSON.stringify(sets.map((d) => d.name))}`);
+        dsId = found.id as number;
+      }
+      snapshot = ((await h.request<Json>("POST", `/api/datasets/${dsId}/snapshot`, {})).id) as number;
+    }
+    // the server wants the field present; an empty list means "the function's newest version"
+    const pins: Json = { mode: "user_run", snapshot_id: snapshot, repeats: o.repeats ?? 1, version_ids: [] };
+    if (o.name) pins.name = o.name;
+    if (o.version !== undefined) pins.version_ids = [o.version];
+    if (o.scoreSet !== undefined) pins.plan_id = o.scoreSet;
+    else {
+      const ids = ((await h.request<Json[]>("GET", `/api/functions/${fnId}/scores`)) ?? []).map((s) => s.id);
+      if (!ids.length) throw new Error("this function has no checks yet — pass scoreSet: <id> or add checks in the app.");
+      pins.score_ids = ids;
+    }
+    expId = ((await h.request<Json>("POST", `/api/functions/${fnId}/experiments`, pins)).id) as number;
+  }
+
+  const given = await h.request<{ rows: { row: number; input: Json }[]; repeats: number; received?: { row: number; repeat: number }[] }>(
+    "GET", `/api/experiments/${expId}/user-run/rows`);
+  const done = new Set((given.received ?? []).map((r) => `${r.row}:${r.repeat}`));
+  const repeats = Number(given.repeats) || 1;
+  const jobs: { row: number; rep: number; input: Json }[] = [];
+  for (const r of given.rows) for (let rep = 1; rep <= repeats; rep++) if (!done.has(`${r.row}:${rep}`)) jobs.push({ row: r.row, rep, input: r.input });
+  const total = given.rows.length * repeats;
+  const counts = { failed: 0, sent: done.size };
+
+  const one = async (job: { row: number; rep: number; input: Json }) => {
+    const input = job.input && typeof job.input === "object" && !Array.isArray(job.input) ? job.input : { input: job.input };
+    const t0 = performance.now();
+    const cap = await captureTrace(input, (t) => o.task(input));
+    const env = cap.envelope as Json;
+    const failed = cap.error !== null;
+    const body: Json = {
+      output: failed ? null : (cap.value !== null && typeof cap.value === "object" && !Array.isArray(cap.value) ? cap.value as Json : { output: cap.value ?? null }),
+      steps: env.steps, tokens_in: env.tokens_in, tokens_out: env.tokens_out, cost: env.cost,
+      latency_ms: Math.max(0, Math.round(performance.now() - t0)), error: cap.error, success: !failed, repeat: job.rep,
+    };
+    if (typeof env.model === "string") body.model = env.model.slice(0, 80);
+    await putWithRetry(h, `/api/experiments/${expId}/user-run/rows/${job.row}`, body);
+    if (failed) counts.failed++;
+    counts.sent++;
+    try { o.progress?.(counts.sent, total, job.row, !failed); } catch { /* a bad callback never stops the run */ }
+  };
+
+  let next = 0;
+  const worker = async () => { while (next < jobs.length) await one(jobs[next++]!); };
+  await Promise.all(Array.from({ length: Math.min(concurrency, Math.max(jobs.length, 1)) }, worker));
+
+  let exp = await h.request<Json>("POST", `/api/experiments/${expId}/user-run/finish`, {});
+  const deadline = Date.now() + (o.waitTimeoutMs ?? 600_000);   // scoring runs on our side; wait so the summary is real
+  while (exp.status !== "completed" && exp.status !== "failed" && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, evalTuning.pollMs));
+    exp = await h.request<Json>("GET", `/api/experiments/${expId}`);
+  }
+  let checks: Json[] = [];
+  try { checks = (await h.request<Json[]>("GET", `/api/functions/${fnId}/score-results`, undefined, { experiment_ids: String(expId), group_by: "experiment" })) ?? []; } catch { /* the summary still stands */ }
+  // overall pass rate: each check group weighted by the rows it covers (a row that crashed in your code has no model,
+  // so it forms its own group)
+  const graded = checks.filter((c) => typeof c.pass_rate === "number").map((c) => ({ r: c.pass_rate as number, n: Number(c.n) || 1 }));
+  const totalN = graded.reduce((a, g) => a + g.n, 0);
+  return {
+    experiment_id: expId, function_id: fnId, status: exp.status as string | undefined, rows: given.rows.length, repeats,
+    sent: counts.sent, task_failed: counts.failed, not_run: Math.max(0, total - counts.sent),
+    pass_rate: totalN ? graded.reduce((a, g) => a + g.r * g.n, 0) / totalN : null,
+    checks: checks.map((c) => ({ score: c.score, model: c.model, pass_rate: c.pass_rate, n: c.n })),
+    url: `${h.baseUrl}/fn/${fnId}?panel=experiments`,
+  };
+}
+
+/** Run a dataset through YOUR code and get it scored — one call (FNA-REQ-530).
+ *
+ *     const r = await evaluate("support_triage", { dataset: "tickets", task: myAgent, scoreSet: 4, concurrency: 4 });
+ *
+ *  Authentication: `token` or the FNAI_TOKEN environment variable (a personal access token). */
+export async function evaluate(fn: number | string, opts: EvalOptions & { token?: string; baseUrl?: string }): Promise<EvalResult> {
+  const token = opts.token ?? (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.FNAI_TOKEN;
+  if (!token) throw new Error("evaluate() needs your personal access token: pass token or set FNAI_TOKEN.");
+  return runEval(new Http(resolveBaseUrl(opts.baseUrl), token, DEFAULT_TIMEOUT_MS), fn, opts);
 }
 
 class Datasets {
@@ -2111,6 +2345,7 @@ export class FunctionDraft extends YamlView {
     this.fresh = false;                   // saved: later plain saves update the new draft
     this.baseline = this.outline();
     this.finishSave(working, version);    // the draft file becomes this version's copy
+    await warnIfAgentAtDefaultStepLimit(this.h, this.id, this.snapshot());    // FNA-REQ-465
     return version;
   }
 
@@ -2160,7 +2395,7 @@ export class Client {
   auth: Auth;
 
   constructor(opts: ClientOptions) {
-    this.baseUrl = opts.baseUrl ?? "http://localhost:8000";
+    this.baseUrl = resolveBaseUrl(opts.baseUrl);
     this.timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.http = new Http(this.baseUrl, opts.token, this.timeoutMs);
     this.draftsFolder = opts.draftsFolder;
@@ -2554,4 +2789,100 @@ export function createFunction(client: Client, opts: {
   model?: string; temperature?: number; extra?: Json;
 }): Promise<CreatedFunction> {
   return createFunctionAndVersion(client, opts);
+}
+
+
+// ── FNA-REQ-531: fetch a prompt version, fill it in on your own computer ───────────────────────────────────────────
+//
+//     const p = await getPrompt("ticket_summary", { version: "live" });   // key: FNAI_API_KEY (fnk_…)
+//     const text = p.render({ ticket_text: ticket });                      // filled in here; nothing is sent to us
+//     await trace(input, async (t) => { … }, { prompt: p });               // the trace names the version it used
+//
+// "Live" is whatever was last deployed in the app (rollback included), so a change there reaches your code on its
+// next fetch with no redeploy of yours. Nothing runs on Functional AI's side.
+
+const PROMPT_VAR = /\{([a-z_][a-z0-9_]*)\}/g;     // the server's rule: {name}; anything else stays as written
+
+export class Prompt {
+  readonly function: string;
+  readonly version: number;
+  readonly versionId: number;
+  readonly live: boolean;
+  readonly template: string;
+  readonly variables: string[];
+  readonly model: string | null;
+  readonly settings: { temperature?: number | null };
+  readonly temperature: number | null;
+  readonly inputSchema: Json;
+  readonly outputSchema: Json;
+  readonly artifactHash: string | null;
+
+  constructor(readonly data: Json) {
+    this.function = String(data.function ?? "");
+    this.version = data.version as number;
+    this.versionId = data.version_id as number;
+    this.live = Boolean(data.live);
+    this.template = String(data.template ?? "");
+    this.variables = ((data.substitution as Json | undefined)?.vars as string[] | undefined) ?? [];
+    this.model = (data.model as string | null | undefined) ?? null;
+    this.settings = (data.settings as { temperature?: number | null } | undefined) ?? {};
+    this.temperature = this.settings.temperature ?? null;
+    this.inputSchema = (data.input_schema as Json | undefined) ?? {};
+    this.outputSchema = (data.output_schema as Json | undefined) ?? {};
+    this.artifactHash = (data.artifact_hash as string | null | undefined) ?? null;
+  }
+
+  /** Fill in the {variables}: each {name} becomes String(value). A name you gave no value for is left as written,
+   *  as Functional AI's own renderer does. */
+  render(values: Record<string, unknown> = {}): string {
+    return this.template.replace(PROMPT_VAR, (whole, name: string) =>
+      Object.prototype.hasOwnProperty.call(values, name) ? String(values[name]) : whole);
+  }
+}
+
+const promptCache = new Map<string, { at: number; prompt: Prompt }>();
+
+/** Overridable in tests. */
+export const promptTuning = { now: () => Date.now() };
+
+export interface GetPromptOptions {
+  /** "live" (default) or a version number. */
+  version?: number | "live";
+  /** The function's invoke key (fnk_…); defaults to FNAI_API_KEY. */
+  apiKey?: string;
+  baseUrl?: string;
+  /** How long an answer is kept (default 60 s; 0 = always ask). If Functional AI can't be reached the last copy is used. */
+  cacheSeconds?: number;
+}
+
+/** Fetch a prompt version (see above). */
+export async function getPrompt(fn: string, opts: GetPromptOptions = {}): Promise<Prompt> {
+  const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env;
+  const key = opts.apiKey ?? env?.FNAI_API_KEY;
+  if (!key) throw new Error("getPrompt needs the function's invoke key: pass apiKey or set FNAI_API_KEY.");
+  const base = resolveBaseUrl(opts.baseUrl).replace(/\/+$/, "");
+  const version = String(opts.version ?? "live");
+  const ck = `${base}|${key}|${fn}|${version}`;
+  const ttl = (opts.cacheSeconds ?? 60) * 1000;
+  const hit = promptCache.get(ck);
+  const now = promptTuning.now();
+  if (hit && ttl > 0 && now - hit.at < ttl) return hit.prompt;
+  try {
+    const data = await new Http(base, key, 15_000).request<Json>("GET", `/v1/prompts/${fn}`, undefined, { version });
+    const prompt = new Prompt(data);
+    promptCache.set(ck, { at: now, prompt });
+    return prompt;
+  } catch (e) {
+    const status = e instanceof FnaiError ? e.status : 0;
+    if (hit && (status === 0 || status >= 500)) {            // unreachable or struggling: the copy from earlier
+      console.warn(`fnai: could not refresh prompt ${fn} (${(e as Error).message}); using the copy from earlier`);
+      return hit.prompt;
+    }
+    throw e;
+  }
+}
+
+/** Forget every kept prompt (tests, or after rotating a key). */
+export function clearPromptCache(): void {
+  promptCache.clear();
 }

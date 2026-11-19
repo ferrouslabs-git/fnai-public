@@ -11,10 +11,11 @@ import os
 # keep draft files from tests out of the working folder
 os.environ["FNAI_DRAFTS_DIR"] = tempfile.mkdtemp(prefix="fnai-test-drafts-")
 
-from fnai import (Client, DefinitionError, FnaiError, Function, FunctionDraft, PromptFileError, STARTER_YAML,
+import fnai
+from fnai import (DEFAULT_BASE_URL, Client, DefinitionError, FnaiError, Function, FunctionDraft, PromptFileError, STARTER_YAML,
                   SpaceNotFoundError, _Datasets, _Functions, _Scores, _Spaces,
                   create_function, create_function_from_doc, parse_prompt_file,
-                  write_starter_yaml)
+                  resolve_base_url, write_starter_yaml)
 
 
 def _write(tmp: Path, name: str, text: str) -> str:
@@ -920,6 +921,10 @@ class _RecHttp:
             return {"id": 9, "status": "completed"}
         if path.endswith("/findings"):
             return [{"title": "t"}]
+        if path.endswith("/check-results"):
+            self.calls.append(("QUERY", path, dict(query or {})))
+            total, start = 3, (query or {}).get("offset", 0)
+            return {"total": total, "items": [{"row": i + 1} for i in range(start, min(total, start + 2))]}
 
     def upload(self, path, *, filename, content, fields):
         self.calls.append(("UPLOAD", path, {"filename": filename, "fields": fields}))
@@ -938,6 +943,22 @@ class NewSdkSurface(unittest.TestCase):
         from fnai import _Experiments
         self.assertEqual(_Experiments(_RecHttp()).run(9)["findings"], [{"title": "t"}])
         self.assertNotIn("findings", _Experiments(_RecHttp()).run(9, include_findings=False))
+
+    def test_check_results_reads_every_page_and_passes_the_filters(self):
+        from fnai import _Experiments
+        rec = _RecHttp()
+        rec_pages = []
+        orig = rec.__call__
+
+        def two_per_page(method, path, body=None, query=None):     # the server gives at most 2 per page here
+            rec_pages.append(dict(query or {}))
+            return orig(method, path, body, query)
+        out = _Experiments(two_per_page).check_results(9, score_id=4, result="failed")
+        self.assertEqual([i["row"] for i in out], [1, 2, 3])
+        self.assertEqual([p["offset"] for p in rec_pages], [0, 2])
+        self.assertTrue(all(p["score_id"] == 4 and p["result"] == "failed" for p in rec_pages))
+        with self.assertRaises(ValueError):
+            _Experiments(_RecHttp()).check_results(9, result="maybe")
 
     def test_dataset_upload_sends_file_and_mapping(self):
         with tempfile.TemporaryDirectory() as d:
@@ -2047,6 +2068,143 @@ class BackgroundRuns(unittest.TestCase):
         with self.assertRaises(FnaiError) as ctx:
             f.report_trace({"function_id": 3})
         self.assertEqual(ctx.exception.status, 422)
+
+
+class ResolveBaseUrl(unittest.TestCase):
+    def test_explicit_then_env_then_default(self):
+        with unittest.mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("FNAI_BASE_URL", None)
+            self.assertEqual(resolve_base_url(None), DEFAULT_BASE_URL)
+            self.assertEqual(DEFAULT_BASE_URL, "https://uat.fnai.dev")
+            os.environ["FNAI_BASE_URL"] = "https://staging.fnai.dev"
+            self.assertEqual(resolve_base_url(None), "https://staging.fnai.dev")
+            self.assertEqual(resolve_base_url("https://explicit.example"), "https://explicit.example")
+            fn = Function("rev", api_key="fnk_x")
+            self.assertEqual(fn._http._base, "https://staging.fnai.dev")
+
+
+
+class AgentStepLimitWarning(unittest.TestCase):
+    """FNA-REQ-465: an agent still at the default step limit of 1 can never use a tool and then answer."""
+
+    AGENT = {"implementation": {"execution": {"mode": "agent"}}}
+    CANVAS_AGENT = {"impl": "agent"}
+    PROMPT = {"impl": "prompt"}
+
+    def setUp(self):
+        fnai._STEP_LIMIT_WARNED.clear()
+
+    def _http(self, step_limit, version_snapshot, calls=None, fail_fn_lookup=False):
+        def http(method, path, body=None, query=None):
+            if calls is not None:
+                calls.append((method, path))
+            if path == "/api/versions/5":
+                return {"id": 5, "function_id": 9, "snapshot": version_snapshot}
+            if path == "/api/functions/9":
+                if fail_fn_lookup:
+                    raise FnaiError(500, "boom")
+                return {"id": 9, "step_limit": step_limit, "step_limit_max": 12}
+            if path == "/api/versions/5/playground/run":
+                return {"success": True, "output": {}}
+            raise AssertionError(path)
+        return http
+
+    def _run(self, http):
+        import warnings as _w
+        with _w.catch_warnings(record=True) as caught:
+            _w.simplefilter("always")
+            out = fnai._Versions(http).playground(5, input={})
+        return out, [str(c.message) for c in caught]
+
+    def test_an_agent_at_step_limit_one_is_warned_with_the_call_that_fixes_it(self):
+        out, msgs = self._run(self._http(1, self.AGENT))
+        self.assertTrue(out["success"])
+        self.assertEqual(len(msgs), 1)
+        self.assertIn("can take only 1 step", msgs[0])
+        self.assertIn("c.functions.update(9, step_limit=<n>)", msgs[0])
+        self.assertIn("up to 12", msgs[0])
+
+    def test_the_canvas_snapshot_shape_is_recognised_too(self):
+        _, msgs = self._run(self._http(1, self.CANVAS_AGENT))
+        self.assertEqual(len(msgs), 1)
+
+    def test_it_warns_once_per_function_not_on_every_run(self):
+        http = self._http(1, self.AGENT)
+        _, first = self._run(http)
+        _, second = self._run(http)
+        self.assertEqual((len(first), len(second)), (1, 0))
+
+    def test_a_raised_limit_or_a_prompt_function_says_nothing(self):
+        _, raised = self._run(self._http(4, self.AGENT))
+        _, prompt = self._run(self._http(1, self.PROMPT))
+        self.assertEqual(raised, [])
+        self.assertEqual(prompt, [])
+
+    def test_a_prompt_function_costs_no_extra_function_lookup(self):
+        calls = []
+        self._run(self._http(1, self.PROMPT, calls))
+        self.assertNotIn(("GET", "/api/functions/9"), calls)
+
+    def test_a_failed_lookup_never_blocks_the_run(self):
+        out, msgs = self._run(self._http(1, self.AGENT, fail_fn_lookup=True))
+        self.assertTrue(out["success"])
+        self.assertEqual(msgs, [])
+
+
+
+class RunFundedBy(unittest.TestCase):
+    """FNA-REQ-477: a call's meta says whose key paid; the Python SDK warns once per process for Functional AI's key."""
+
+    def setUp(self):
+        fnai._FUNDED_BY_WARNED = False
+
+    def _run(self, funded_by, **meta):
+        body = {"output": {"ok": True}, "status": "success",
+                "meta": {"version": 1, "latency_ms": 5, "cost_usd": 0.0, "tokens_in": 1, "tokens_out": 1,
+                         "trace_id": "t" * 32, "funded_by": funded_by, **meta}}
+        import warnings as _w
+        f = Function("demo", api_key="fnk_x", base_url="http://fake.local")
+        with unittest.mock.patch("fnai._Http.__call__", lambda self, method, path, body_=None, query=None: body):
+            with _w.catch_warnings(record=True) as caught:
+                _w.simplefilter("always")
+                res = f.run(x=1)
+        return res, [str(c.message) for c in caught]
+
+    def test_the_result_exposes_who_paid(self):
+        for value in ("own", "functional_ai", None):
+            res, _ = self._run(value)
+            self.assertEqual(res.funded_by, value)
+            self.assertEqual(res.meta["funded_by"], value)
+
+    def test_an_older_server_without_the_field_gives_none(self):
+        body = {"output": {}, "status": "success", "meta": {"trace_id": "t" * 32}}
+        f = Function("demo", api_key="fnk_x", base_url="http://fake.local")
+        with unittest.mock.patch("fnai._Http.__call__", lambda self, method, path, body_=None, query=None: body):
+            self.assertIsNone(f.run().funded_by)
+
+    def test_a_call_on_functional_ais_key_warns_once_with_where_to_set_up_your_own(self):
+        _, first = self._run("functional_ai")
+        _, second = self._run("functional_ai")
+        self.assertEqual(len(first), 1)
+        self.assertIn("Functional AI's key", first[0])
+        self.assertIn("API keys", first[0])
+        self.assertIn("http://fake.local", first[0])
+        self.assertEqual(second, [])                              # once per process, not per call
+
+    def test_your_own_key_or_a_test_model_never_warns(self):
+        self.assertEqual(self._run("own")[1], [])
+        self.assertEqual(self._run(None)[1], [])
+
+    def test_a_background_run_warns_too_when_it_finishes_on_functional_ais_key(self):
+        body = {"run_id": 7, "status": "success", "output": {}, "meta": {"funded_by": "functional_ai"}}
+        f = Function("demo", api_key="fnk_x", base_url="http://fake.local")
+        import warnings as _w
+        with unittest.mock.patch("fnai._Http.__call__", lambda self, method, path, body_=None, query=None: body):
+            with _w.catch_warnings(record=True) as caught:
+                _w.simplefilter("always")
+                res = f.get_run(7)
+        self.assertEqual(res.funded_by, "functional_ai")
+        self.assertEqual(len(caught), 1)
 
 
 if __name__ == "__main__":

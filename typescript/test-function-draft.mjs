@@ -282,3 +282,63 @@ console.log("\nAll FunctionDraft tests passed.");
   assert.ok(!calls.some((c) => c.method === "POST" && c.url === `${BASE}/api/functions`));          // not created again
   console.log("OK: existing: \"continue\" carries on with the function, and an unchanged save says so");
 }
+
+// ── FNA-REQ-465: an agent at the default step limit is warned about, once, on playground and on save ─────────
+{
+  const warned = [];
+  const realWarn = console.warn;
+  console.warn = (m) => warned.push(String(m));
+  const mk = (stepLimit, snapshot, failFn = false) => fakeFetch((url, opts) => {
+    if (url === `${BASE}/api/versions/5` && opts.method === "GET") return jsonResponse(200, { id: 5, function_id: 9, snapshot });
+    if (url === `${BASE}/api/functions/9` && opts.method === "GET") {
+      return failFn ? jsonResponse(500, { detail: "boom" }) : jsonResponse(200, { id: 9, step_limit: stepLimit, step_limit_max: 12 });
+    }
+    if (url === `${BASE}/api/versions/5/playground/run` && opts.method === "POST") return jsonResponse(200, { success: true, output: {} });
+    throw new Error(`unexpected request: ${opts.method} ${url}`);
+  });
+  const run = async (stepLimit, snapshot, failFn) => {
+    const calls = mk(stepLimit, snapshot, failFn);
+    const client = new Client({ token: "fnp_x", baseUrl: BASE });
+    const out = await client.versions.playground(5, { input: {} });
+    return { out, calls };
+  };
+  try {
+    // the v2 shape, at 1 → one warning naming the fix and the platform maximum
+    let r = await run(1, { implementation: { execution: { mode: "agent" } } });
+    assert.equal(r.out.success, true);
+    assert.equal(warned.length, 1);
+    assert.match(warned[0], /can take only 1 step/);
+    assert.match(warned[0], /c\.functions\.update\(9, \{ step_limit: <n> \}\)/);
+    assert.match(warned[0], /up to 12/);
+    // once per function per process
+    r = await run(1, { implementation: { execution: { mode: "agent" } } });
+    assert.equal(warned.length, 1);
+  } finally { console.warn = realWarn; }
+}
+{
+  const warned = [];
+  const realWarn = console.warn;
+  console.warn = (m) => warned.push(String(m));
+  try {
+    const fetchWith = (stepLimit, snapshot, failFn = false) => {
+      globalThis.fetch = async (url, opts) => {
+        url = String(url);
+        if (url.endsWith("/api/versions/5") && opts.method === "GET") return jsonResponse(200, { id: 5, function_id: 11, snapshot });
+        if (url.endsWith("/api/functions/11") && opts.method === "GET") {
+          return failFn ? jsonResponse(500, { detail: "boom" }) : jsonResponse(200, { id: 11, step_limit: stepLimit });
+        }
+        if (url.endsWith("/playground/run")) return jsonResponse(200, { success: true });
+        throw new Error(`unexpected request: ${opts.method} ${url}`);
+      };
+    };
+    const client = new Client({ token: "fnp_x", baseUrl: BASE });
+    fetchWith(4, { impl: "agent" });                       // raised limit → nothing
+    await client.versions.playground(5, { input: {} });
+    fetchWith(1, { impl: "prompt" });                      // prompt function at 1 → nothing
+    await client.versions.playground(5, { input: {} });
+    fetchWith(1, { impl: "agent" }, true);                 // lookup fails → run still happens, nothing said
+    const out = await client.versions.playground(5, { input: {} });
+    assert.equal(out.success, true);
+    assert.deepEqual(warned, []);
+  } finally { console.warn = realWarn; }
+}

@@ -33,11 +33,10 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from fnai import Client, FnaiError, write_starter_yaml  # noqa: E402
+from fnai import DEFAULT_BASE_URL, Client, FnaiError, write_starter_yaml  # noqa: E402
 
 CONFIG_PATH = Path.home() / ".fnai" / "config.json"
 PIN_PATH = Path(".fnai") / "pin.json"
-DEFAULT_BASE_URL = "https://uat.fnai.dev"
 
 
 # ── config / pin ──────────────────────────────────────────────────────────
@@ -102,7 +101,8 @@ def cmd_login(args: argparse.Namespace) -> None:
     if not token.startswith("fnp_"):
         raise CliError("that doesn't look like a personal access token — it should start with fnp_ "
                        "(mint one in the app under your avatar → API tokens)")
-    cfg = {"token": token}
+    cfg = load_config()
+    cfg["token"] = token
     if args.base_url:
         cfg["base_url"] = args.base_url
     save_config(cfg)
@@ -173,6 +173,9 @@ def cmd_run(args: argparse.Namespace) -> None:
     print(json.dumps(res.output, indent=2))
     print(f"({res.meta.get('latency_ms')}ms, ${res.meta.get('cost_usd', 0):.4f}, "
          f"trace {res.trace_id})", file=sys.stderr)
+    if res.funded_by == "functional_ai":        # FNA-REQ-477
+        print("note: this call ran on Functional AI's key, not one of yours. Set up your own key under API keys "
+              f"in the app ({base}).", file=sys.stderr)
 
 
 def cmd_deploy(args: argparse.Namespace) -> None:
@@ -219,7 +222,69 @@ def cmd_diff(args: argparse.Namespace) -> None:
         print(line)
 
 
+def _load_task(spec: str):
+    """`module:function` (or `path/to/file.py:function`) → the callable. The current folder is importable."""
+    import importlib
+    import importlib.util
+    if ":" not in spec:
+        raise CliError("--task must look like module:function (e.g. my_agent:run)")
+    mod_name, _, attr = spec.rpartition(":")
+    sys.path.insert(0, os.getcwd())
+    try:
+        if mod_name.endswith(".py"):
+            sp = importlib.util.spec_from_file_location("fn_task_module", mod_name)
+            if sp is None or sp.loader is None:
+                raise CliError(f"can't load {mod_name}")
+            mod = importlib.util.module_from_spec(sp)
+            sp.loader.exec_module(mod)
+        else:
+            mod = importlib.import_module(mod_name)
+    except CliError:
+        raise
+    except Exception as e:  # noqa: BLE001
+        raise CliError(f"couldn't import {mod_name}: {type(e).__name__}: {e}")
+    fn = getattr(mod, attr, None)
+    if not callable(fn):
+        raise CliError(f"{mod_name} has no function called {attr!r}")
+    return fn
+
+
+def _cmd_eval_own_code(args: argparse.Namespace) -> None:
+    """fn eval --task module:function — the rows run through YOUR code (FNA-REQ-530)."""
+    c = get_client()
+    task = _load_task(args.task)
+    quiet = args.json
+
+    def progress(done: int, total: int, row: int, ok: bool) -> None:
+        if not quiet:
+            print(f"  {done}/{total}  row {row}  {'ok' if ok else 'FAILED'}", file=sys.stderr)
+
+    if not quiet:
+        print("Running your code on each row...", file=sys.stderr)
+    res = c.eval.run(args.function_id, task=task, dataset=args.dataset, snapshot=args.snapshot,
+                     score_set=args.score_set, name=args.name, version=args.version, repeats=args.repeats,
+                     concurrency=args.concurrency, progress=progress)
+    below = (args.min_pass_rate is not None and (res["pass_rate"] is None or res["pass_rate"] < args.min_pass_rate))
+    res["threshold_met"] = None if args.min_pass_rate is None else not below
+    if quiet:
+        print(json.dumps(res, indent=2))
+    else:
+        for ch in res["checks"]:
+            rate = ch.get("pass_rate")
+            print(f"{'FAIL' if isinstance(rate, (int, float)) and rate < 1 else 'ok  '}  "
+                  f"{str(ch.get('score')):<24} {str(ch.get('model') or ''):<16} pass_rate={'-' if rate is None else f'{rate * 100:.0f}%'}")
+        pr = res["pass_rate"]
+        print(f"{res['rows']} row(s), {res['task_failed']} failed in your code, {res['not_run']} not run; "
+              f"pass rate {'-' if pr is None else f'{pr * 100:.0f}%'}\n{res['url']}")
+    if below:
+        pr = res["pass_rate"]
+        got = "n/a" if pr is None else f"{pr * 100:.0f}%"
+        raise CliError(f"pass rate {got} is below the required {args.min_pass_rate * 100:.0f}%")
+
+
 def cmd_eval(args: argparse.Namespace) -> None:
+    if args.task:
+        return _cmd_eval_own_code(args)
     c = get_client()
     version_id = args.version
     if version_id is None:
@@ -343,12 +408,21 @@ def build_parser() -> argparse.ArgumentParser:
     rn.add_argument("--base-url")
     rn.set_defaults(func=cmd_run)
 
-    ev = sub.add_parser("eval", help="run this function's checks; exits nonzero if any fail")
+    ev = sub.add_parser("eval", help="run this function's checks (on our side, or through your own code with --task); exits nonzero if any fail")
     ev.add_argument("function_id", type=int)
     ev.add_argument("--version", type=int, help="default: the folder's pinned version")
     ev.add_argument("--snapshot", type=int, help="default: the function's latest dataset snapshot")
     ev.add_argument("--scores", help="comma-separated score ids (default: every score on the function)")
     ev.add_argument("--repeats", type=int, default=1)
+    ev.add_argument("--task", help="module:function — run each row through YOUR code (a function taking the "
+                                   "row's input dict and returning the answer) instead of through ours")
+    ev.add_argument("--dataset", help="with --task: dataset id or name (default: the newest); a fresh snapshot is taken")
+    ev.add_argument("--score-set", type=int, dest="score_set", help="with --task: the Score Set id (default: every check)")
+    ev.add_argument("--name", help="with --task: a name for the experiment")
+    ev.add_argument("--concurrency", type=int, default=1, help="with --task: rows run at once (default 1)")
+    ev.add_argument("--min-pass-rate", type=float, dest="min_pass_rate",
+                    help="with --task: exit nonzero if the overall pass rate (0-1) is below this")
+    ev.add_argument("--json", action="store_true", help="with --task: print the summary as JSON only")
     ev.set_defaults(func=cmd_eval)
 
     dp = sub.add_parser("deploy", help="make a version the live deployment")

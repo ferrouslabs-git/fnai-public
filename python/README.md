@@ -115,7 +115,7 @@ what's wrong, rather than a generic 422 from the server.
 |---|---|---|
 | `fn.contract()` | `GET /v1/run/{slug}/contract` | Active deployment schemas |
 | `fn.run(**input)` | `POST /v1/run/{slug}` | Execute active deployment |
-| `fn.report_trace(trace)` | `POST /v1/traces` | Report a call that ran on your own servers (see `docs/self-hosted-traces.md`) |
+| `fn.report_trace(trace)` | `POST /v1/traces` | Report a call that ran on your own servers (see [self-hosted-traces.md](../docs/self-hosted-traces.md)) |
 
 Semantics:
 - API-level problems raise `FnaiError` (`.status`, `.detail`): 401 bad key, 404 unknown/undeployed function, 422 input doesn't match the contract, 504 execution timeout.
@@ -168,4 +168,51 @@ fn.report_trace({
 })   # → {"trace_id": "…", "duplicate": False}; the same trace_id again is harmless
 ```
 
-It shows in the monitor next to hosted calls. See `docs/self-hosted-traces.md`.
+It shows in the monitor next to hosted calls. See [self-hosted-traces.md](../docs/self-hosted-traces.md).
+
+### The short way: tracing helpers
+
+Most code should not build that envelope by hand. These helpers record a call in a few lines, send it from a
+background thread, and never raise into your code or slow it down. If the network is off you lose traces, nothing else.
+
+```python
+import fnai
+fnai.init_tracing(api_key="fnk_…")                 # or set FNAI_API_KEY — the key names the function
+client = fnai.wrap_openai(OpenAI())                # or fnai.wrap_anthropic(Anthropic())
+
+@fnai.traced                                       # each call becomes a tool step
+def search(query): ...
+
+with fnai.trace(input={"question": q}) as t:       # one call of your agent
+    t.output({"answer": run_agent(q)})
+fnai.flush_traces()                                # before a short script or serverless handler ends
+```
+
+- Model calls through a wrapped OpenAI or Anthropic client become LLM steps (model, tokens, time).
+- `version_id=` links a trace to a prompt version you pulled; leave it out if you have none.
+- A block that raises is recorded as failed and your exception goes on unchanged.
+- `FNAI_TRACING=0` switches it all off without touching your code.
+
+### Run a dataset through your own code
+
+```python
+import fnai
+result = fnai.eval("support_triage", dataset="tickets", task=my_agent, score_set=4, concurrency=4)
+print(result["pass_rate"], result["url"])
+```
+
+`task(input)` gets each row's input (a dict) and returns the answer; Functional AI scores it with the Score Set. A task
+that raises fails that row only. Needs `FNAI_TOKEN`. From the command line:
+`fn eval 5 --task my_agent:run --dataset tickets --score-set 4 --min-pass-rate 0.9` (exits nonzero below the threshold;
+`--json` prints just the summary). See [user-run-experiments.md](../docs/user-run-experiments.md).
+
+### Fetch the live prompt and fill it in yourself
+
+```python
+p = fnai.get_prompt("ticket_summary", "live")      # key: FNAI_API_KEY (the function's fnk_… key)
+text = p.render(ticket_text=ticket)                # filled in on your computer
+# call your own model with p.model and p.temperature
+with fnai.trace(input={"ticket_text": ticket}, prompt=p) as t: ...   # the trace names the version
+```
+
+Deploying or rolling back in the app changes what `"live"` returns; your code never changes. See [prompts-for-your-own-code.md](../docs/prompts-for-your-own-code.md).

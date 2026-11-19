@@ -69,3 +69,19 @@ const fn = () => new FnaiFunction("demo", { apiKey: "fnk_x", baseUrl: BASE });
 }
 
 console.log("report-trace: ok");
+
+// FNA-REQ-477: a call's meta says whose provider key paid, and RunResult.fundedBy reads it
+{
+  const answer = (funded_by) => jsonResponse(200, { output: { ok: true }, status: "success",
+    meta: { version: 1, latency_ms: 5, cost_usd: 0, tokens_in: 1, tokens_out: 1, trace_id: "t".repeat(32), funded_by } });
+  for (const value of ["own", "functional_ai", null]) {
+    fakeFetch(() => answer(value));
+    const res = await fn().run({ x: 1 });
+    assert.equal(res.fundedBy, value);
+    assert.equal(res.meta.funded_by, value);
+  }
+  // an older server that does not send the field: null, never undefined
+  fakeFetch(() => jsonResponse(200, { output: {}, status: "success", meta: { trace_id: "t".repeat(32) } }));
+  assert.equal((await fn().run({})).fundedBy, null);
+}
+
