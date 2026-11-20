@@ -1,5 +1,7 @@
 # fnai (TypeScript) — which function do I use?
 
+> Testing an AI agent end to end (tracing, a dataset from real traffic, checks, `fn eval`, reading failures, fixes, and when to ask the person)? Read [`agent-playbook/PLAYBOOK.md`](../agent-playbook/PLAYBOOK.md): the working order, and the rules that never bend (never go live, ask before spending credits).
+
 Find what you want to do, then copy the call. Everything hangs off one `Client`.
 
 ```ts

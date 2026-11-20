@@ -14,14 +14,16 @@ import (
 
 // FNA-REQ-530: Eval.Run — a dataset run through your own code.
 type evalFake struct {
-	mu       sync.Mutex
-	put      map[int]map[string]any
-	created  []map[string]any
-	finished int
-	received []map[string]any
-	passRate float64
-	busy     int // answer this many PUTs with 503 first
-	polls    int
+	mu         sync.Mutex
+	put        map[int]map[string]any
+	created    []map[string]any
+	finished   int
+	received   []map[string]any
+	passRate   float64
+	busy       int // answer this many PUTs with 503 first
+	polls      int
+	finishBusy int // answer this many finish calls with 503 first
+	manyFailed bool
 }
 
 func evalServer(t *testing.T, f *evalFake) *Client {
@@ -73,6 +75,13 @@ func evalServer(t *testing.T, f *evalFake) *Client {
 	})
 	mux.HandleFunc("POST /api/experiments/9/user-run/finish", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
+		if f.finishBusy > 0 {
+			f.finishBusy--
+			f.mu.Unlock()
+			w.WriteHeader(503)
+			reply(w, map[string]any{"detail": "busy"})
+			return
+		}
 		f.finished++
 		f.mu.Unlock()
 		reply(w, map[string]any{"id": 9, "status": "pending"})
@@ -87,6 +96,25 @@ func evalServer(t *testing.T, f *evalFake) *Client {
 			status = "completed"
 		}
 		reply(w, map[string]any{"id": 9, "status": status})
+	})
+	mux.HandleFunc("GET /api/experiments/9/check-results", func(w http.ResponseWriter, r *http.Request) {
+		items := []map[string]any{}
+		if f.passRate < 1 {
+			items = append(items, map[string]any{"row": 2, "input": map[string]any{"q": "question 2"}, "score_name": "has answer",
+				"model": "my-agent", "result": "failed", "feedback": "answer was 'Wrong Co', expected 'Acme'", "trace_id": "t2"})
+		}
+		if f.manyFailed {
+			items = nil
+			for i := 1; i <= 15; i++ {
+				items = append(items, map[string]any{"row": i, "input": map[string]any{"q": strings.Repeat("x", 900)},
+					"score_name": "c", "result": "failed", "feedback": "bad"})
+			}
+			if lim, _ := strconv.Atoi(r.URL.Query().Get("limit")); lim > 0 && lim < len(items) {
+				reply(w, map[string]any{"total": 15, "limit": lim, "offset": 0, "items": items[:lim]})
+				return
+			}
+		}
+		reply(w, map[string]any{"total": len(items), "limit": 500, "offset": 0, "items": items})
 	})
 	mux.HandleFunc("GET /api/functions/5/score-results", func(w http.ResponseWriter, r *http.Request) {
 		reply(w, []map[string]any{{"score": "has answer", "pass_rate": f.passRate}})
@@ -187,5 +215,66 @@ func TestEvalRunWithoutScoreSetUsesEveryCheckAndRejectsBadInput(t *testing.T) {
 	}
 	if _, err := c.Eval.Run(5, func(map[string]any, *EvalRecorder) (any, error) { return nil, nil }, EvalOptions{Dataset: "nope"}); err == nil || !strings.Contains(err.Error(), "no dataset named") {
 		t.Fatalf("expected a no-dataset error, got %v", err)
+	}
+}
+
+func TestEvalRunRetriesABusyServerWhenFinishing(t *testing.T) {
+	f := &evalFake{finishBusy: 2}
+	c := evalServer(t, f)
+	res, err := c.Eval.Run(5, func(map[string]any, *EvalRecorder) (any, error) { return map[string]any{"a": 1}, nil },
+		EvalOptions{Dataset: "tickets", ScoreSet: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Status != "completed" || res.Sent != 3 || f.finished != 1 {
+		t.Fatalf("expected a completed run after retrying finish, got %+v finished=%d", res, f.finished)
+	}
+}
+
+// FNA-REQ-542: the summary names the failed rows and why, so an assistant can fix one without opening the app.
+func TestEvalRunListsTheFailedRowsWithTheChecksOwnExplanation(t *testing.T) {
+	f := &evalFake{passRate: 0.5}
+	c := evalServer(t, f)
+	res, err := c.Eval.Run(5, func(in map[string]any, rec *EvalRecorder) (any, error) { return map[string]any{"answer": "x"}, nil },
+		EvalOptions{Dataset: "tickets", ScoreSet: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.FailedTotal != 1 || len(res.FailedRows) != 1 {
+		t.Fatalf("expected one failed row, got %+v", res)
+	}
+	got := res.FailedRows[0]
+	if got.Row != 2 || got.Check != "has answer" || got.Model != "my-agent" || got.TraceID != "t2" ||
+		got.Why != "answer was 'Wrong Co', expected 'Acme'" {
+		t.Fatalf("bad failed row: %+v", got)
+	}
+	if in, _ := got.Input.(map[string]any); in["q"] != "question 2" {
+		t.Fatalf("input lost: %+v", got.Input)
+	}
+}
+
+func TestEvalRunPassingRunHasNoFailedRows(t *testing.T) {
+	c := evalServer(t, &evalFake{})
+	res, err := c.Eval.Run(5, func(in map[string]any, rec *EvalRecorder) (any, error) { return 1, nil }, EvalOptions{Dataset: "tickets", ScoreSet: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.FailedTotal != 0 || res.FailedRows == nil || len(res.FailedRows) != 0 {
+		t.Fatalf("a passing run should list none (as an empty list, not null): %+v", res)
+	}
+}
+
+func TestFailedRowsShowsTheFirstTenAndCutsALongInput(t *testing.T) {
+	c := evalServer(t, &evalFake{manyFailed: true})
+	total, rows, err := c.Eval.Experiments.FailedRows(9, MaxFailedRows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 15 || len(rows) != 10 {
+		t.Fatalf("want 15 total and 10 shown, got %d / %d", total, len(rows))
+	}
+	s, ok := rows[0].Input.(string)
+	if !ok || !strings.HasSuffix(s, "…") {
+		t.Fatalf("a long input should be cut to a string, got %T", rows[0].Input)
 	}
 }

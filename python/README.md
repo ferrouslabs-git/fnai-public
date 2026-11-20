@@ -204,7 +204,7 @@ print(result["pass_rate"], result["url"])
 `task(input)` gets each row's input (a dict) and returns the answer; Functional AI scores it with the Score Set. A task
 that raises fails that row only. Needs `FNAI_TOKEN`. From the command line:
 `fn eval 5 --task my_agent:run --dataset tickets --score-set 4 --min-pass-rate 0.9` (exits nonzero below the threshold;
-`--json` prints just the summary). See [user-run-experiments.md](../docs/user-run-experiments.md).
+`--json` prints just the summary; `FNAI_SPACE=<name>` if the function is outside your default space). See [user-run-experiments.md](../docs/user-run-experiments.md).
 
 ### Fetch the live prompt and fill it in yourself
 

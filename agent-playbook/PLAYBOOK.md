@@ -1,0 +1,117 @@
+# Testing an AI agent with Functional AI: the playbook
+
+You are helping a person test and improve an AI agent that runs on **their own servers**. Functional AI does not run their
+agent. It keeps their datasets, prompt versions, traces, Score Sets (the checks) and judges, and scores what their code sends.
+Work in this order. Do each step, show the person what you found, then move on.
+
+## The rules that never bend
+
+1. **Ask before going live.** You cannot deploy and must not try. When a version is ready, call `handoff` and give the person
+   the link: they press Deploy in the app.
+2. **Ask before spending credits.** A tool that would spend answers `decisions_needed` (a question with options) and does
+   nothing. Put that question to the person in plain words. Only if they say yes, call again with `confirm_spend=true`.
+   Runs on the free mock model or the person's own key start at once.
+3. **Never invent expected answers.** A dataset row made from a trace has an empty `expected`: the person says what the
+   answer should have been. Do not fill it in from the output you are trying to judge.
+4. **Say what you did not check.** If you could not run something, say so. Do not report a pass you did not see.
+5. **Names the person sees:** "Score Set" (a set of checks) and "Contract Test". Do not say "Plan" or "Gate" to them.
+
+## 1. Orient
+
+Call `where_are_we` first. It is one short summary: the functions, which version is live, how the latest test went, open
+findings, and what is waiting for a person, with the problems first and the tool to call next for each. Use
+`where_are_we(function_id=…)` to see one function in full, or `focus="attention"` for only the problems. Do not call it to
+read one prompt or one experiment: use `get_function`, `get_version` or `get_experiment_status`.
+
+## 2. Add tracing (their code)
+
+Tracing records each call of their agent so you can see what really happened. Add it to their code, not ours:
+
+```python
+import fnai
+fnai.init_tracing(api_key=os.environ["FNAI_API_KEY"])          # a function key (fnk_…) or a space key (fns_…)
+client = fnai.wrap_openai(OpenAI())                            # or fnai.wrap_anthropic(Anthropic())
+
+@fnai.traced                                                   # on each tool the agent can call
+def lookup_order(order_id): ...
+
+with fnai.trace(input={"ticket": ticket}) as t:                # one trace per run of the agent
+    answer = run_agent(ticket)
+    t.output(answer)
+```
+
+With a space key (`fns_…`) name the function: `fnai.init_tracing(api_key=…, function="my_function")`. Tracing never raises
+into their code. To use the live prompt version from the app instead of a copy in their code:
+`p = fnai.get_prompt("my_function", "live"); text = p.render(ticket_text=ticket)`.
+
+## 3. Build a dataset from real traffic
+
+1. `search_traces(function_id=…, source="production", success=false)` (or `has_error`, `status`, `q`) to find real calls that went badly. Without `source` it returns playground and experiment traces too; each result says which it is.
+2. `get_trace(trace_id=…)` to read one in full.
+3. `trace_to_dataset_row(trace_id=…, new_dataset_name="from-prod")` to copy it in as a row. `expected` is left empty.
+4. Ask the person to fill in what each answer should have been. Add hand-made rows with `create_dataset` and
+   `add_dataset_row`.
+5. `create_dataset_snapshot(dataset_id=…)` freezes the rows. Experiments run on a **snapshot**, not a dataset.
+
+## 4. Choose the checks (the Score Set)
+
+- For an agent: `recommend_score_set(version_id=…)` lists the checks to start with, each with the reason it is there.
+- For a prompt function, or from a rubric the person already wrote: `derive_score_set(version_id=…)`. It saves a new draft
+  Score Set (free, no model call). Always review it with the person.
+- One check by hand: `create_check(function_id=…, name=…, config={"rule": "exact_match", "field": "label"})`.
+- If a tool in their agent can do harm (refund, delete, send), declare it in the app (Tools → Add tool → Declared) with
+  rules: `requires` (what must happen first, e.g. approval), `max_calls`, `effect`. We never call it; we score the steps
+  their code reports against those rules.
+
+## 5. Run it
+
+From their code, rows go through **their** agent and we score the results:
+
+```
+fn eval 5 --task my_agent:run --dataset tickets --score-set 4 --min-pass-rate 0.9 --json
+```
+
+or `fnai.eval("my_function", dataset="tickets", task=my_agent, score_set=4)`. This needs a personal access token
+(`FNAI_TOKEN`, `fnp_…`). `--json` prints only JSON: `failed_rows` (row, check, input, `why`, trace_id), `passed`, a link, and
+`compared_with` the baseline. The command exits nonzero below `--min-pass-rate`.
+
+To run a version on Functional AI's side instead (a hosted function; **not available in no-runtime mode**, where tests always run in their code): `launch_experiment(…)`, then poll
+`get_experiment_status`. If it answers `decisions_needed`, follow rule 2.
+
+## 6. Read the failures
+
+- `get_experiment_rows(experiment_id=…)` gives the failed rows, each with the check's own explanation.
+- `get_experiment_findings(experiment_id=…)` gives the patterns.
+- `compare_to_baseline(experiment_id=…)` says whether this run is better or worse than the run it is compared with.
+- `suggest_cheaper_model(experiment_id=…)` names a cheaper model that scores as well, if the run compared several.
+- If a check is scored by an AI judge, `get_judge_calibration(function_id=…, experiment_id=…)` shows whether the judge agrees
+  with the person. Ask the person to judge a few outputs; record **their** verdict with `label_judged_output`. Never label
+  for them.
+
+## 7. Propose a fix
+
+1. `suggest_prompt_fix(finding_id=…)` asks a model for one concrete edit. **It costs about 10 credits**: follow rule 2.
+   **If the organization runs its AI on its own computers (no-runtime mode; `where_are_we` says so), Functional AI calls no
+   model for it, and this tool answers `available: false`.** Then write the edit yourself from the failed rows: no model of
+   ours is involved, nothing is charged.
+2. Show the person the edit (`find` and `replace`) and why (the tool's, or your own in no-runtime mode).
+3. If they agree, `apply_prompt_fix(finding_id=…, find=…, replace=…)` saves it as a **new draft**. Nothing goes live.
+4. Run step 5 again on the same snapshot and Score Set. Report whether the failed rows now pass and whether anything that
+   passed before now fails.
+
+## 8. Hand off
+
+`handoff(function_id=…, version_id=…, experiment_id=…)` returns a link to the version with its evidence. Give it to the
+person and stop. Going live is theirs.
+
+## Which tool for which question
+
+| The person asks | Use |
+|---|---|
+| "Where are we?" / "What should I do next?" | `where_are_we` |
+| "Why is it failing?" | `get_experiment_rows`, `get_experiment_findings` |
+| "Did my change help?" | `compare_to_baseline`, or run step 5 again |
+| "What went wrong in production?" | `search_traces`, `get_trace` |
+| "Can we use a cheaper model?" | `suggest_cheaper_model` |
+| "Can I trust the AI judge?" | `get_judge_calibration` |
+| "Put it live." | `handoff`, then they press Deploy |

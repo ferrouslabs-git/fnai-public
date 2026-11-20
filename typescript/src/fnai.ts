@@ -44,7 +44,7 @@ export type { TraceOptions, TracingOptions } from "./tracing.js";
 
 type S = components["schemas"];
 
-export const VERSION = "0.11.0";
+export const VERSION = "0.12.0";
 const DEFAULT_TIMEOUT_MS = 90_000; // server caps execution at 60s; transport headroom
 
 export class FnaiError extends Error {
@@ -914,11 +914,10 @@ export interface EvalResult {
 
 const RETRY_PUT = [500, 1000, 2000];
 
-async function putWithRetry(h: Http, path: string, body: Json): Promise<void> {
+async function callWithRetry<T>(h: Http, method: string, path: string, body?: Json): Promise<T> {
   for (let attempt = 0; ; attempt++) {
     try {
-      await h.request("PUT", path, body);
-      return;
+      return await h.request<T>(method, path, body);
     } catch (e) {
       const status = e instanceof FnaiError ? e.status : 0;
       const retryable = status === 0 || status === 408 || status === 425 || status === 429 || status >= 500;
@@ -926,6 +925,10 @@ async function putWithRetry(h: Http, path: string, body: Json): Promise<void> {
       await new Promise((r) => setTimeout(r, evalTuning.retryMs[attempt] ?? RETRY_PUT[attempt]));
     }
   }
+}
+
+async function putWithRetry(h: Http, path: string, body: Json): Promise<void> {
+  await callWithRetry(h, "PUT", path, body);
 }
 
 /** Overridable in tests. */
@@ -968,8 +971,8 @@ async function runEval(h: Http, fn: number | string, o: EvalOptions): Promise<Ev
     expId = ((await h.request<Json>("POST", `/api/functions/${fnId}/experiments`, pins)).id) as number;
   }
 
-  const given = await h.request<{ rows: { row: number; input: Json }[]; repeats: number; received?: { row: number; repeat: number }[] }>(
-    "GET", `/api/experiments/${expId}/user-run/rows`);
+  const given = await callWithRetry<{ rows: { row: number; input: Json }[]; repeats: number; received?: { row: number; repeat: number }[] }>(
+    h, "GET", `/api/experiments/${expId}/user-run/rows`);
   const done = new Set((given.received ?? []).map((r) => `${r.row}:${r.repeat}`));
   const repeats = Number(given.repeats) || 1;
   const jobs: { row: number; rep: number; input: Json }[] = [];
@@ -999,11 +1002,11 @@ async function runEval(h: Http, fn: number | string, o: EvalOptions): Promise<Ev
   const worker = async () => { while (next < jobs.length) await one(jobs[next++]!); };
   await Promise.all(Array.from({ length: Math.min(concurrency, Math.max(jobs.length, 1)) }, worker));
 
-  let exp = await h.request<Json>("POST", `/api/experiments/${expId}/user-run/finish`, {});
+  let exp = await callWithRetry<Json>(h, "POST", `/api/experiments/${expId}/user-run/finish`, {});
   const deadline = Date.now() + (o.waitTimeoutMs ?? 600_000);   // scoring runs on our side; wait so the summary is real
   while (exp.status !== "completed" && exp.status !== "failed" && Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, evalTuning.pollMs));
-    exp = await h.request<Json>("GET", `/api/experiments/${expId}`);
+    exp = await callWithRetry<Json>(h, "GET", `/api/experiments/${expId}`);
   }
   let checks: Json[] = [];
   try { checks = (await h.request<Json[]>("GET", `/api/functions/${fnId}/score-results`, undefined, { experiment_ids: String(expId), group_by: "experiment" })) ?? []; } catch { /* the summary still stands */ }

@@ -18,6 +18,7 @@ class _Fake:
     def __init__(self, rows=3, pass_rate=1.0):
         self.rows = [{"row": i + 1, "input": {"q": f"question {i + 1}"}} for i in range(rows)]
         self.put, self.created, self.finished, self.received, self.polls = {}, [], 0, [], 0
+        self.finish_busy = 0
         self.pass_rate = pass_rate
         outer = self
 
@@ -46,12 +47,22 @@ class _Fake:
                 if p == "/api/experiments/9":
                     outer.polls += 1
                     return self._send({"id": 9, "status": "completed" if outer.polls >= 2 else "running"})
+                if p == "/api/datasets/2/snapshots":
+                    return self._send([{"id": 77}])
+                if p == "/api/experiments/9/check-results":
+                    items = [{"row": 2, "input": {"q": "question 2"}, "score_name": "has answer", "model": "my-agent",
+                              "result": "failed", "feedback": "answer was 'Wrong Co', expected 'Acme'", "trace_id": "t2"}
+                             ] if outer.pass_rate < 1 else []
+                    return self._send({"total": len(items), "limit": 500, "offset": 0, "items": items})
                 if p == "/api/functions/5/score-results":
                     return self._send([{"score": "has answer", "pass_rate": outer.pass_rate}])
                 self._send({"detail": "nope " + p}, 404)
 
             def do_POST(self):
                 p, b = self.path, self._body()
+                if p == "/api/experiments/9/user-run/finish" and outer.finish_busy > 0:
+                    outer.finish_busy -= 1
+                    return self._send({"detail": "busy"}, 503)
                 if p == "/api/datasets/2/snapshot":
                     return self._send({"id": 77})
                 if p == "/api/functions/5/experiments":
@@ -104,6 +115,11 @@ class Eval(unittest.TestCase):
         self.assertEqual(res["status"], "completed")     # it waited for the scoring, polling until done
         self.assertGreaterEqual(self.fake.polls, 2)
         self.assertIn("/fn/5?panel=experiments", res["url"])
+
+    def test_a_busy_server_when_finishing_is_retried_and_the_run_still_completes(self):
+        self.fake.finish_busy = 2
+        res = self.run_eval(lambda inp: {"a": 1})
+        self.assertEqual((res["status"], res["sent"], self.fake.finished), ("completed", 3, 1))
 
     def test_a_task_that_raises_fails_that_row_only(self):
         def task(inp):
@@ -206,6 +222,38 @@ class Cli(unittest.TestCase):
         self.assertIn("below the required 90%", err)
         self.assertEqual(self.run_cli("--min-pass-rate", "0.4")[0], 0)
 
+    # FNA-REQ-542: the summary names the failed rows and why, so an assistant can fix one without opening the app
+    def test_a_failing_run_lists_the_failed_rows_with_the_checks_own_explanation(self):
+        self.fake.pass_rate = 0.5
+        code, out, _ = self.run_cli()
+        self.assertIn("1 of 1 failed row(s):", out)
+        self.assertIn("row 2  has answer  my-agent", out)
+        self.assertIn("answer was 'Wrong Co', expected 'Acme'", out)
+        self.assertIn("/fn/5?panel=experiments", out)
+
+    def test_json_carries_the_failed_rows_and_nothing_else_prints(self):
+        self.fake.pass_rate = 0.5
+        _, out, _ = self.run_cli("--json")
+        res = json.loads(out)
+        self.assertEqual(res["failed_total"], 1)
+        self.assertEqual(res["failed_rows"][0], {"row": 2, "check": "has answer", "model": "my-agent",
+                                                 "input": {"q": "question 2"},
+                                                 "why": "answer was 'Wrong Co', expected 'Acme'", "trace_id": "t2"})
+
+    def test_a_passing_run_lists_no_failed_rows(self):
+        _, out, _ = self.run_cli("--json")
+        self.assertEqual(json.loads(out)["failed_rows"], [])
+
+    def test_a_long_input_is_cut_and_only_the_first_ten_rows_are_shown(self):
+        items = [{"row": i, "input": {"q": "x" * 900}, "score_name": "c", "result": "failed", "feedback": "bad"}
+                 for i in range(1, 16)]
+
+        exps = fnai._Experiments(None)
+        exps.check_results = lambda *a, **k: items
+        res = fnai.failed_rows(exps, 9)
+        self.assertEqual((res["failed_total"], len(res["failed_rows"])), (15, 10))
+        self.assertTrue(res["failed_rows"][0]["input"].endswith("…") and len(res["failed_rows"][0]["input"]) <= 401)
+
     def test_a_bad_task_spec_is_a_readable_error(self):
         out, err = io.StringIO(), io.StringIO()
         with redirect_stdout(out), redirect_stderr(err):
@@ -216,3 +264,49 @@ class Cli(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PlainFnEval(unittest.TestCase):
+    """`fn eval 5` (the app runs the model, not your code) prints the same failed-row summary."""
+
+    def setUp(self):
+        self.fake = _Fake()
+        self.addCleanup(self.fake.close)
+        os.environ.update(FNAI_TOKEN="fnp_test", FNAI_BASE_URL=self.fake.url)
+        self.addCleanup(lambda: [os.environ.pop(k, None) for k in ("FNAI_TOKEN", "FNAI_BASE_URL")])
+        orig = self.fake.httpd.RequestHandlerClass.do_GET
+
+        def get(h):
+            if h.path.split("?")[0] == "/api/experiments/9":       # a finished run, as the app creates it
+                return h._send({"id": 9, "status": "completed", "results": {"baseline": {"verdict": "worse"}}})
+            return orig(h)
+        self.fake.httpd.RequestHandlerClass.do_GET = get
+
+    def run_cli(self, *extra):
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = fn_cli.main(["eval", "5", "--version", "3", *extra])
+        return code, out.getvalue(), err.getvalue()
+
+    def test_a_failing_run_names_the_failed_rows_and_still_exits_nonzero(self):
+        self.fake.pass_rate = 0.5
+        code, out, err = self.run_cli()
+        self.assertEqual(code, 1)
+        self.assertIn("FAIL  has answer", out)
+        self.assertIn("answer was 'Wrong Co', expected 'Acme'", out)
+        self.assertIn("1 check(s) failed", err)
+
+    def test_json_is_only_json_and_says_how_the_run_compares(self):
+        self.fake.pass_rate = 0.5
+        code, out, _ = self.run_cli("--json")
+        res = json.loads(out)                                         # progress text went to stderr, so this parses
+        self.assertEqual(code, 1)
+        self.assertFalse(res["passed"])
+        self.assertEqual(res["failed_rows"][0]["row"], 2)
+        self.assertEqual(res["compared_with"], {"verdict": "worse"})
+        self.assertIn("/fn/5?panel=experiments", res["url"])
+
+    def test_a_passing_run_says_so(self):
+        code, out, _ = self.run_cli()
+        self.assertEqual(code, 0)
+        self.assertIn("All checks passed.", out)

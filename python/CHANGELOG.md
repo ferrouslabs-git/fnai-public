@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.12.0 — 2026-11-20
+
+- **New: the agent playbook.** `agent-playbook/PLAYBOOK.md` is the working order for a coding assistant (Claude Code, Cursor, any MCP client) testing an AI agent with Functional AI: add tracing, build a dataset from real traffic, choose the checks, run `fn eval`, read the failed rows, propose a fix, and ask before going live or spending credits. `agent-playbook/claude-code-plugin/` is a Claude Code plugin whose skill loads it; `agent-playbook/cursor/functional-ai.mdc` is the same as a Cursor rule. Our MCP server also offers four prompts (`where_are_we`, `set_up_testing`, `investigate_a_drop`, `fix_a_failing_row`) and tells a connecting assistant to open a session with where the project stands and a short list of choices. Connect the assistant to Functional AI first (Org → Connect AI Tools); the plugin carries the playbook, not the connection. The plugin installs from this repo: `/plugin marketplace add ferrouslabs-git/fnai-public`, then `/plugin install functional-ai@fnai` (a marketplace file now sits at the repo root); the Cursor rule can also be downloaded from Org → Connect AI Tools.
+
+- **New: `fn eval` says which rows failed and why.** After a run, `fn eval` (both with and without `--task`) lists up to ten failed rows: the row's number, the check, the row's input and the check's own explanation, then a link to the run in the app. `--json` now works on every `fn eval` and prints only JSON: `{experiment_id, passed, checks, failed_total, failed_rows: [{row, check, model, input, why, trace_id}], url, compared_with}` (`compared_with` is how the run did against the baseline, when there is one), so a coding assistant can fix a row, run it again and see whether it helped. `fnai.eval(...)` returns `failed_total` and `failed_rows` too. Go `fn` does the same (`fn eval --json`, and `EvalResult.FailedRows` / `Experiments.FailedRows` in the Go SDK).
+
 ## 0.11.0 — 2026-11-19
 
 - **New: a quickstart, reference pages and example agents for testing your own AI.** `docs/quickstart.md` takes you from two keys to a traced call and a scored test run in five minutes (Python and TypeScript); `docs/` also has pages on tracing, keys, prompts, tests run by your own code, declared tools, live scoring and space keys; `examples/` has a plain OpenAI agent and a LangGraph agent. These now ship with the SDK.

@@ -64,7 +64,7 @@ def resolve_base_url(explicit: str | None = None) -> str:
     """Explicit argument, then FNAI_BASE_URL, then the default."""
     return explicit or os.environ.get("FNAI_BASE_URL") or DEFAULT_BASE_URL
 
-__version__ = "0.11.0"
+__version__ = "0.12.0"
 DEFAULT_TIMEOUT_S = 90  # server caps execution at 60s; headroom for transport
 
 
@@ -3475,16 +3475,21 @@ def _result_for_row(task: Any, row_input: dict) -> dict:
     return body
 
 
-def _put_with_retry(http: "_Http", path: str, body: dict, tries: int = 4) -> None:
+def _call_with_retry(http: "_Http", method: str, path: str, body: Any = None, tries: int = 4) -> Any:
+    """One call that is safe to repeat (reading, replacing a row, finishing): a brief network problem or a busy server is
+    retried a few times with a short wait, anything else is raised at once."""
     for attempt in range(tries):
         try:
-            http("PUT", path, body)
-            return
+            return http(method, path, body)
         except FnaiError as e:
             retryable = e.status in _RETRY_STATUSES or e.status >= 500
             if not retryable or attempt == tries - 1:
                 raise
             time.sleep(_RETRY_AFTER_S[min(attempt, len(_RETRY_AFTER_S) - 1)])
+
+
+def _put_with_retry(http: "_Http", path: str, body: dict, tries: int = 4) -> None:
+    _call_with_retry(http, "PUT", path, body, tries)
 
 
 _EVAL_POLL_S: float | None = None     # tests set this to 0 so they do not wait
@@ -3523,7 +3528,7 @@ def run_eval(http: "_Http", function: "int | str", *, task: Any, dataset: "int |
             pins["score_ids"] = ids
         exp_id = http("POST", f"/api/functions/{fn_id}/experiments", pins)["id"]
 
-    given = http("GET", f"/api/experiments/{exp_id}/user-run/rows")
+    given = _call_with_retry(http, "GET", f"/api/experiments/{exp_id}/user-run/rows")
     done = {(r["row"], r["repeat"]) for r in given.get("received", [])}
     jobs = [(r["row"], rep, r["input"]) for r in given["rows"] for rep in range(1, int(given["repeats"]) + 1)
             if (r["row"], rep) not in done]
@@ -3553,11 +3558,11 @@ def run_eval(http: "_Http", function: "int | str", *, task: Any, dataset: "int |
             for f in [pool.submit(one, j) for j in jobs]:
                 f.result()
 
-    exp = http("POST", f"/api/experiments/{exp_id}/user-run/finish", {})
+    exp = _call_with_retry(http, "POST", f"/api/experiments/{exp_id}/user-run/finish", {})
     deadline = time.monotonic() + wait_timeout          # scoring runs on our side; wait for it so the summary is real
     while exp.get("status") not in ("completed", "failed") and time.monotonic() < deadline:
         time.sleep(min(2.0, max(0.0, deadline - time.monotonic())) if _EVAL_POLL_S is None else _EVAL_POLL_S)
-        exp = http("GET", f"/api/experiments/{exp_id}")
+        exp = _call_with_retry(http, "GET", f"/api/experiments/{exp_id}")
     checks = []
     try:
         checks = _Scores(http).results(fn_id, experiment_ids=str(exp_id), group_by="experiment") or []
@@ -3575,7 +3580,32 @@ def run_eval(http: "_Http", function: "int | str", *, task: Any, dataset: "int |
         "checks": [{"score": c.get("score"), "model": c.get("model"), "pass_rate": c.get("pass_rate"), "n": c.get("n")}
                    for c in checks],
         "url": f"{http._base}/fn/{fn_id}?panel=experiments",
+        **(failed_rows(http, exp_id) if exp.get("status") == "completed" else {"failed_total": 0, "failed_rows": []}),
     }
+
+
+MAX_FAILED_ROWS = 10            # a summary an assistant can read in one go; the link has the rest
+_INPUT_CHARS = 400
+
+
+def failed_rows(http_or_exps: Any, exp_id: int, limit: int = MAX_FAILED_ROWS) -> dict:
+    """FNA-REQ-542: the rows that failed in an experiment, small enough to read at a glance, so an assistant can edit and
+    re-run without opening the app. {"failed_total": n, "failed_rows": [{row, check, model, input, why, trace_id}]}.
+    `why` is the check's own explanation; `row` is the row's number in the dataset (from 1). Best effort: a failure to read
+    them gives an empty list, never an error, because the summary must still print."""
+    exps = http_or_exps if isinstance(http_or_exps, _Experiments) else _Experiments(http_or_exps)
+    try:
+        items = exps.check_results(exp_id, result="failed")
+    except (FnaiError, ValueError):
+        return {"failed_total": 0, "failed_rows": []}
+    rows = []
+    for it in items[:max(0, limit)]:
+        inp = it.get("input")
+        shown = json.dumps(inp, default=str)
+        rows.append({"row": it.get("row"), "check": it.get("score_name"), "model": it.get("model") or None,
+                     "input": inp if len(shown) <= _INPUT_CHARS else shown[:_INPUT_CHARS] + "…",
+                     "why": it.get("feedback") or "", "trace_id": it.get("trace_id")})
+    return {"failed_total": len(items), "failed_rows": rows}
 
 
 def _resolve_dataset_id(http: "_Http", fn_id: int, dataset: "int | str | None") -> int:
@@ -3609,7 +3639,8 @@ def eval(function: "int | str", *, task: Any, dataset: "int | str | None" = None
     `snapshot=` to use one. `resume=<experiment id>` carries on a run that stopped part-way (rows already sent are
     skipped). It waits (up to `wait_timeout` seconds, default 600) for the scoring to finish. score_set: the Score Set id (default: every check on the function). Authentication:
     `token=` or the FNAI_TOKEN environment variable (a personal access token). Returns
-    {"experiment_id", "status", "rows", "task_failed", "not_run", "pass_rate", "checks", "url"}."""
+    {"experiment_id", "status", "rows", "task_failed", "not_run", "pass_rate", "checks", "url", "failed_total",
+    "failed_rows"} (the first 10 failed rows: row, check, model, input, why, trace_id)."""
     key = token or os.environ.get("FNAI_TOKEN")
     if not key:
         raise ValueError("fnai.eval needs your personal access token: pass token=… or set FNAI_TOKEN.")

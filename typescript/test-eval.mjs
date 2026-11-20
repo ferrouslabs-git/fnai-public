@@ -8,7 +8,7 @@ evalTuning.retryMs = [0, 0, 0];
 evalTuning.pollMs = 0;
 process.env.FNAI_TOKEN = "fnp_test";
 
-function fake({ rows = 3, passRate = 1, received = [], putStatuses = [] } = {}) {
+function fake({ rows = 3, passRate = 1, received = [], putStatuses = [], finishStatuses = [] } = {}) {
   const st = { put: {}, created: [], finished: 0, auth: [], polls: 0 };
   globalThis.fetch = async (url, opts) => {
     const u = new URL(String(url));
@@ -27,6 +27,7 @@ function fake({ rows = 3, passRate = 1, received = [], putStatuses = [] } = {}) 
       if (status < 300) st.put[Number(p.split("/").pop())] = body;
       return reply(status < 300 ? { ok: true } : { detail: "busy" }, status);
     }
+    if (m === "POST" && p === "/api/experiments/9/user-run/finish" && finishStatuses.length) return reply({ detail: "busy" }, finishStatuses.shift());
     if (m === "POST" && p === "/api/experiments/9/user-run/finish") { st.finished++; return reply({ id: 9, status: "pending" }); }
     if (m === "GET" && p === "/api/experiments/9") { st.polls++; return reply({ id: 9, status: st.polls >= 2 ? "completed" : "running" }); }
     if (m === "GET" && p === "/api/functions/5/score-results") return reply([{ score: "has answer", pass_rate: passRate }]);
@@ -100,6 +101,13 @@ function fake({ rows = 3, passRate = 1, received = [], putStatuses = [] } = {}) 
   await assert.rejects(evaluate(5, { task: () => ({}), baseUrl: BASE }), /FNAI_TOKEN/);
   process.env.FNAI_TOKEN = "x";
   await assert.rejects(evaluate(5, { task: () => ({}), dataset: "nope", baseUrl: BASE }), /no dataset named/);
+}
+
+// a busy server when finishing is retried and the run still completes
+{
+  const st = fake({ finishStatuses: [503, 503] });
+  const r = await evaluate(5, { task: () => ({ a: 1 }), dataset: "tickets", scoreSet: 4, baseUrl: BASE });
+  assert.deepEqual([r.status, r.sent, st.finished], ["completed", 3, 1]);
 }
 
 console.log("test-eval: ok");

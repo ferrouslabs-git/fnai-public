@@ -91,7 +91,11 @@ def get_client(base_url: str | None = None) -> Client:
     if not token:
         raise CliError("not signed in — run `fn login` first (or set FNAI_TOKEN)")
     base = base_url or os.environ.get("FNAI_BASE_URL") or cfg.get("base_url") or DEFAULT_BASE_URL
-    return Client(token=token, base_url=base)
+    client = Client(token=token, base_url=base)
+    space = os.environ.get("FNAI_SPACE")          # a function outside your default space: name its space
+    if space:
+        client.use_space(space)
+    return client
 
 
 # ── commands ──────────────────────────────────────────────────────────────
@@ -275,7 +279,9 @@ def _cmd_eval_own_code(args: argparse.Namespace) -> None:
                   f"{str(ch.get('score')):<24} {str(ch.get('model') or ''):<16} pass_rate={'-' if rate is None else f'{rate * 100:.0f}%'}")
         pr = res["pass_rate"]
         print(f"{res['rows']} row(s), {res['task_failed']} failed in your code, {res['not_run']} not run; "
-              f"pass rate {'-' if pr is None else f'{pr * 100:.0f}%'}\n{res['url']}")
+              f"pass rate {'-' if pr is None else f'{pr * 100:.0f}%'}")
+        _print_failed_rows(res)
+        print(res["url"])
     if below:
         pr = res["pass_rate"]
         got = "n/a" if pr is None else f"{pr * 100:.0f}%"
@@ -311,7 +317,7 @@ def cmd_eval(args: argparse.Namespace) -> None:
     # server-side (backend/app/experiments/api.py: "v0 synchronous") — calling
     # .run() again here would always 409 ("already run"). The poll below is kept
     # so this keeps working if that ever becomes async.
-    print(f"Running experiment against {len(score_ids)} check(s)...")
+    print(f"Running experiment against {len(score_ids)} check(s)...", file=sys.stderr if args.json else sys.stdout)
     exp = c.eval.experiments.create(
         args.function_id, version_ids=[version_id], snapshot_id=snapshot_id,
         score_ids=score_ids, repeats=args.repeats)
@@ -322,11 +328,48 @@ def cmd_eval(args: argparse.Namespace) -> None:
 
     results = c.eval.scores.results(args.function_id, experiment_ids=str(exp["id"]), group_by="experiment")
     failed = [r for r in results if r.get("pass_rate", 1.0) < 1.0]
-    if failed:
+    summary = _summary(c, args, exp["id"], results, failed)
+    if args.json:
+        print(json.dumps(summary, indent=2))
+    else:
         for r in sorted(failed, key=lambda r: r["score"]):
             print(f"FAIL  {r['score']:<30} pass_rate={r['pass_rate'] * 100:.0f}%")
+        _print_failed_rows(summary)
+        print(summary["url"])
+    if failed:
         raise CliError(f"{len(failed)} check(s) failed")
-    print("All checks passed.")
+    if not args.json:
+        print("All checks passed.")
+
+
+def _summary(c: Client, args: argparse.Namespace, exp_id: int, results: list, failed: list) -> dict:
+    """FNA-REQ-542: what an assistant needs to edit, re-run and compare: which rows failed and why, plus a link."""
+    import fnai
+    base = fnai.resolve_base_url(None)
+    out = {"experiment_id": exp_id, "function_id": args.function_id, "passed": not failed,
+           "checks": [{"score": r.get("score"), "model": r.get("model"), "pass_rate": r.get("pass_rate"), "n": r.get("n")}
+                      for r in results],
+           "url": f"{base}/fn/{args.function_id}?panel=experiments",
+           **(fnai.failed_rows(c.eval.experiments, exp_id) if failed else {"failed_total": 0, "failed_rows": []})}
+    try:
+        cmp_ = (c.eval.experiments.get(exp_id).get("results") or {}).get("baseline")
+        if cmp_:
+            out["compared_with"] = cmp_          # how this run did against the baseline, as the app computed it
+    except FnaiError:
+        pass
+    return out
+
+
+def _print_failed_rows(summary: dict) -> None:
+    rows = summary.get("failed_rows") or []
+    if not rows:
+        return
+    print(f"\n{len(rows)} of {summary['failed_total']} failed row(s):")
+    for r in rows:
+        inp = r["input"] if isinstance(r["input"], str) else json.dumps(r["input"], default=str)
+        print(f"  row {r['row']}  {r['check']}  {r['model'] or ''}\n    input: {inp}\n    why:   {r['why'] or '-'}")
+    if summary["failed_total"] > len(rows):
+        print(f"  ... and {summary['failed_total'] - len(rows)} more: {summary['url']}")
 
 
 def _wait_for_experiment(c: Client, exp_id: int, timeout_s: int = 600) -> str:
@@ -422,7 +465,7 @@ def build_parser() -> argparse.ArgumentParser:
     ev.add_argument("--concurrency", type=int, default=1, help="with --task: rows run at once (default 1)")
     ev.add_argument("--min-pass-rate", type=float, dest="min_pass_rate",
                     help="with --task: exit nonzero if the overall pass rate (0-1) is below this")
-    ev.add_argument("--json", action="store_true", help="with --task: print the summary as JSON only")
+    ev.add_argument("--json", action="store_true", help="print the summary as JSON only: failed rows, why each failed, a link")
     ev.set_defaults(func=cmd_eval)
 
     dp = sub.add_parser("deploy", help="make a version the live deployment")

@@ -752,7 +752,7 @@ func cmdEval(args []string) error {
 	scoreSet := fs.Int("score-set", 0, "with --task: the Score Set id (default: every check)")
 	concurrency := fs.Int("concurrency", 1, "with --task: rows run at once")
 	minPass := fs.Float64("min-pass-rate", -1, "with --task: exit nonzero if the overall pass rate (0-1) is below this")
-	asJSON := fs.Bool("json", false, "with --task: print the summary as JSON only")
+	asJSON := fs.Bool("json", false, "print the summary as JSON only: failed rows, why each failed, a link")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -825,7 +825,11 @@ func cmdEval(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("Running experiment %d against %d check(s)...\n", exp.ID, len(scoreIDs))
+	progress := os.Stdout
+	if *asJSON {
+		progress = os.Stderr // stdout stays pure JSON
+	}
+	fmt.Fprintf(progress, "Running experiment %d against %d check(s)...\n", exp.ID, len(scoreIDs))
 	if _, err := c.Eval.Experiments.Run(exp.ID); err != nil {
 		return err
 	}
@@ -842,14 +846,84 @@ func cmdEval(args []string) error {
 	if err != nil {
 		return err
 	}
-	if len(failed) > 0 {
+	summary := evalSummary(c, fnID, exp.ID, failed)
+	if *asJSON {
+		b, _ := json.MarshalIndent(summary, "", "  ")
+		fmt.Println(string(b))
+	} else {
 		for _, f := range failed {
 			fmt.Printf("FAIL  %-30s pass_rate=%.0f%%\n", f.name, f.passRate*100)
 		}
+		printFailedRows(summary.FailedTotal, summary.FailedRows, summary.URL)
+		if len(failed) > 0 {
+			fmt.Println(summary.URL)
+		}
+	}
+	if len(failed) > 0 {
 		return fmt.Errorf("%d check(s) failed", len(failed))
 	}
-	fmt.Println("All checks passed.")
+	if !*asJSON {
+		fmt.Println("All checks passed.")
+	}
 	return nil
+}
+
+// plainEvalSummary is `fn eval --json` for a run the app executed (FNA-REQ-542): what an assistant needs to edit, run again
+// and compare.
+type plainEvalSummary struct {
+	ExperimentID int                  `json:"experiment_id"`
+	FunctionID   int                  `json:"function_id"`
+	Passed       bool                 `json:"passed"`
+	Checks       []map[string]any     `json:"checks"`
+	FailedTotal  int                  `json:"failed_total"`
+	FailedRows   []fnai.EvalFailedRow `json:"failed_rows"`
+	URL          string               `json:"url"`
+	ComparedWith any                  `json:"compared_with,omitempty"` // how the run did against the baseline, when there is one
+}
+
+func evalSummary(c *fnai.Client, fnID, expID int, failed []gateFailure) plainEvalSummary {
+	s := plainEvalSummary{ExperimentID: expID, FunctionID: fnID, Passed: len(failed) == 0, Checks: []map[string]any{},
+		FailedRows: []fnai.EvalFailedRow{}, URL: fmt.Sprintf("%s/fn/%d?panel=experiments", c.BaseURL(), fnID)}
+	var results []map[string]any
+	if err := c.Raw("GET", fmt.Sprintf("/api/functions/%d/score-results?experiment_ids=%d&group_by=experiment", fnID, expID), nil, &results); err == nil {
+		for _, r := range results {
+			s.Checks = append(s.Checks, map[string]any{"score": r["score"], "model": r["model"], "pass_rate": r["pass_rate"], "n": r["n"]})
+		}
+	}
+	if len(failed) > 0 {
+		if total, rows, err := c.Eval.Experiments.FailedRows(expID, fnai.MaxFailedRows); err == nil {
+			s.FailedTotal, s.FailedRows = total, rows
+		}
+	}
+	var exp struct {
+		Results map[string]any `json:"results"`
+	}
+	if err := c.Raw("GET", fmt.Sprintf("/api/experiments/%d", expID), nil, &exp); err == nil && exp.Results["baseline"] != nil {
+		s.ComparedWith = exp.Results["baseline"]
+	}
+	return s
+}
+
+func printFailedRows(total int, rows []fnai.EvalFailedRow, url string) {
+	if len(rows) == 0 {
+		return
+	}
+	fmt.Printf("\n%d of %d failed row(s):\n", len(rows), total)
+	for _, r := range rows {
+		in, ok := r.Input.(string)
+		if !ok {
+			b, _ := json.Marshal(r.Input)
+			in = string(b)
+		}
+		why := r.Why
+		if why == "" {
+			why = "-"
+		}
+		fmt.Printf("  row %d  %s  %s\n    input: %s\n    why:   %s\n", r.Row, r.Check, r.Model, in, why)
+	}
+	if total > len(rows) {
+		fmt.Printf("  ... and %d more: %s\n", total-len(rows), url)
+	}
 }
 
 // waitForExperiment polls GET /api/experiments/{id} (no typed SDK method for
@@ -1073,7 +1147,9 @@ func evalOwnCode(c *fnai.Client, fnID int, command, dataset string, snapshot, sc
 		if res.PassRate != nil {
 			pr = fmt.Sprintf("%.0f%%", *res.PassRate*100)
 		}
-		fmt.Printf("%d row(s), %d failed in your code, %d not run; pass rate %s\n%s\n", res.Rows, res.TaskFailed, res.NotRun, pr, res.URL)
+		fmt.Printf("%d row(s), %d failed in your code, %d not run; pass rate %s\n", res.Rows, res.TaskFailed, res.NotRun, pr)
+		printFailedRows(res.FailedTotal, res.FailedRows, res.URL)
+		fmt.Println(res.URL)
 	}
 	if below {
 		got := "n/a"

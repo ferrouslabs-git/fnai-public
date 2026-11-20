@@ -12,6 +12,7 @@ package fnai
 // experiment is finished and scored. See docs/user-run-experiments.md for the three calls underneath.
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"strconv"
@@ -103,6 +104,58 @@ type EvalResult struct {
 	PassRate     *float64    `json:"pass_rate"` // nil when no check reported one
 	Checks       []EvalCheck `json:"checks"`
 	URL          string      `json:"url"`
+	// FNA-REQ-542: the first ten rows that failed, small enough to read at a glance, so an assistant can edit and run again.
+	FailedTotal int             `json:"failed_total"`
+	FailedRows  []EvalFailedRow `json:"failed_rows"`
+}
+
+// MaxFailedRows is how many failed rows a summary lists; the link has the rest.
+const MaxFailedRows = 10
+
+const failedInputChars = 400
+
+// EvalFailedRow is one row that failed a check. Why is the check's own explanation. Row is the row's number in the
+// dataset (from 1). A long Input is cut to a string.
+type EvalFailedRow struct {
+	Row     int    `json:"row"`
+	Check   string `json:"check"`
+	Model   string `json:"model,omitempty"`
+	Input   any    `json:"input"`
+	Why     string `json:"why"`
+	TraceID string `json:"trace_id,omitempty"`
+}
+
+// FailedRows reads the rows of an experiment that failed a check: the total, and the first `limit` of them. A failure to
+// read them is returned as an error; callers that must still print a summary ignore it.
+func (s *ExperimentsService) FailedRows(expID, limit int) (int, []EvalFailedRow, error) {
+	if err := requireID(expID, "expID"); err != nil {
+		return 0, nil, err
+	}
+	var page struct {
+		Total int `json:"total"`
+		Items []struct {
+			Row       int    `json:"row"`
+			Input     any    `json:"input"`
+			ScoreName string `json:"score_name"`
+			Model     string `json:"model"`
+			Feedback  string `json:"feedback"`
+			TraceID   string `json:"trace_id"`
+		} `json:"items"`
+	}
+	q := map[string][]string{"result": {"failed"}, "limit": {strconv.Itoa(limit)}}
+	if err := s.h.do("GET", fmt.Sprintf("/api/experiments/%d/check-results", expID), nil, q, &page); err != nil {
+		return 0, nil, err
+	}
+	rows := make([]EvalFailedRow, 0, len(page.Items))
+	for _, it := range page.Items {
+		var in any = it.Input
+		if b, err := json.Marshal(it.Input); err == nil && len(b) > failedInputChars {
+			in = string(b[:failedInputChars]) + "…"
+		}
+		rows = append(rows, EvalFailedRow{Row: it.Row, Check: it.ScoreName, Model: it.Model, Input: in, Why: it.Feedback,
+			TraceID: it.TraceID})
+	}
+	return page.Total, rows, nil
 }
 
 // how often Run asks whether scoring has finished
@@ -110,9 +163,11 @@ var evalPollEvery = 2 * time.Second
 
 var evalRetryWaits = []time.Duration{500 * time.Millisecond, time.Second, 2 * time.Second}
 
-func (s *EvalService) putWithRetry(path string, body map[string]any) error {
+// doWithRetry makes one call that is safe to repeat (reading, replacing a row, finishing): a brief network problem or a busy
+// server is retried a few times with a short wait, anything else is returned at once.
+func (s *EvalService) doWithRetry(method, path string, body any, out any) error {
 	for attempt := 0; ; attempt++ {
-		err := s.h.do("PUT", path, body, nil, nil)
+		err := s.h.do(method, path, body, nil, out)
 		if err == nil {
 			return nil
 		}
@@ -123,6 +178,10 @@ func (s *EvalService) putWithRetry(path string, body map[string]any) error {
 		}
 		time.Sleep(evalRetryWaits[attempt])
 	}
+}
+
+func (s *EvalService) putWithRetry(path string, body map[string]any) error {
+	return s.doWithRetry("PUT", path, body, nil)
 }
 
 // runOne runs the task on one row and never panics: a failure becomes a failed row.
@@ -292,7 +351,7 @@ func (s *EvalService) Run(fnID int, task EvalTask, opts EvalOptions) (*EvalResul
 		} `json:"received"`
 	}
 	exp := "/api/experiments/" + strconv.Itoa(expID)
-	if err := s.h.do("GET", exp+"/user-run/rows", nil, nil, &given); err != nil {
+	if err := s.doWithRetry("GET", exp+"/user-run/rows", nil, &given); err != nil {
 		return nil, err
 	}
 	if given.Repeats < 1 {
@@ -364,13 +423,13 @@ func (s *EvalService) Run(fnID int, task EvalTask, opts EvalOptions) (*EvalResul
 	var fin struct {
 		Status string `json:"status"`
 	}
-	if err := s.h.do("POST", exp+"/user-run/finish", map[string]any{}, nil, &fin); err != nil {
+	if err := s.doWithRetry("POST", exp+"/user-run/finish", map[string]any{}, &fin); err != nil {
 		return nil, err
 	}
 	deadline := time.Now().Add(opts.WaitTimeout)
 	for fin.Status != "completed" && fin.Status != "failed" && time.Now().Before(deadline) {
 		time.Sleep(evalPollEvery)
-		if err := s.h.do("GET", exp, nil, nil, &fin); err != nil {
+		if err := s.doWithRetry("GET", exp, nil, &fin); err != nil {
 			return nil, err
 		}
 	}
@@ -397,6 +456,12 @@ func (s *EvalService) Run(fnID int, task EvalTask, opts EvalOptions) (*EvalResul
 	if n > 0 {
 		avg := sum / float64(n)
 		res.PassRate = &avg
+	}
+	res.FailedRows = []EvalFailedRow{}
+	if fin.Status == "completed" {
+		if total, rows, err := s.Experiments.FailedRows(expID, MaxFailedRows); err == nil { // best effort: the summary still prints
+			res.FailedTotal, res.FailedRows = total, rows
+		}
 	}
 	return res, nil
 }

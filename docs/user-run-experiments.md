@@ -26,6 +26,17 @@ A task that raises (or returns an error) fails that row only; the run goes on. I
 `fn eval 5 --task my_agent:run --dataset tickets --score-set 4 --min-pass-rate 0.9` (Python `fn`: `module:function`; Go `fn`: a command
 that reads the row's JSON on stdin and prints the answer JSON). It exits nonzero when the pass rate is below the threshold.
 
+**Failed rows (`fn eval`, `fnai.eval`, Go `Eval.Run`).** After a run you get the first ten failed rows: the row's number, the check, the row's input, and the check's own explanation, then a link to the run. `fn eval … --json` prints only JSON, so a coding assistant can read it, fix the row and run it again:
+
+```
+{"experiment_id": 9, "passed": false, "checks": [...], "failed_total": 1,
+ "failed_rows": [{"row": 2, "check": "supplier is right", "model": "my-agent", "input": {"document": "invoice 2"},
+                  "why": "supplier was 'Wrong Co', expected 'Acme'", "trace_id": "…"}],
+ "url": "https://…/fn/5?panel=experiments"}
+```
+
+(Long inputs are cut at 400 characters; the link has the rest. Go: `res.FailedRows`, `res.FailedTotal`.)
+
 ## The three calls
 
 All three use your normal sign-in (a personal access token, `fnp_…`) and need the `experiments.run` permission.
