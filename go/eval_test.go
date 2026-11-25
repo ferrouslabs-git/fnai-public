@@ -39,6 +39,9 @@ func evalServer(t *testing.T, f *evalFake) *Client {
 	mux.HandleFunc("GET /api/functions/5/datasets", func(w http.ResponseWriter, r *http.Request) {
 		reply(w, []map[string]any{{"id": 1, "name": "old"}, {"id": 2, "name": "tickets"}})
 	})
+	mux.HandleFunc("GET /api/functions/5/versions", func(w http.ResponseWriter, r *http.Request) {
+		reply(w, []map[string]any{{"id": 502, "number": 2}, {"id": 503, "number": 3}})
+	})
 	mux.HandleFunc("GET /api/functions/5/scores", func(w http.ResponseWriter, r *http.Request) {
 		reply(w, []map[string]any{{"id": 11}, {"id": 12}})
 	})
@@ -156,6 +159,27 @@ func TestEvalRunSendsEveryRowThenFinishes(t *testing.T) {
 	}
 	if !strings.HasSuffix(res.URL, "/fn/5?panel=experiments") {
 		t.Fatalf("bad url %q", res.URL)
+	}
+}
+
+func TestEvalRunVersionIsANumberAndPinsThatVersionsID(t *testing.T) {
+	f := &evalFake{}
+	c := evalServer(t, f)
+	task := func(in map[string]any, rec *EvalRecorder) (any, error) { return map[string]any{"ok": true}, nil }
+	if _, err := c.Eval.Run(5, task, EvalOptions{Dataset: 2, ScoreSet: 4, Version: 3}); err != nil {
+		t.Fatal(err)
+	}
+	if ids := f.created[0]["version_ids"].([]any); len(ids) != 1 || ids[0] != float64(503) {
+		t.Fatalf("version 3 should pin the id 503, got %v", ids) // not 3: a number is not an id
+	}
+	f2 := &evalFake{}
+	c2 := evalServer(t, f2)
+	_, err := c2.Eval.Run(5, task, EvalOptions{Dataset: 2, ScoreSet: 4, Version: 9})
+	if err == nil || !strings.Contains(err.Error(), "no version 9") || !strings.Contains(err.Error(), "it has: 2, 3") {
+		t.Fatalf("an unknown version number should be a clear error, got %v", err)
+	}
+	if len(f2.created) != 0 {
+		t.Fatalf("nothing should be created, got %v", f2.created)
 	}
 }
 

@@ -886,6 +886,7 @@ export interface EvalOptions {
   /** The Score Set id (default: every check on the function). */
   scoreSet?: number;
   name?: string;
+  /** The version NUMBER to test (2 for v2; a draft is fine; default: the newest). */
   version?: number;
   repeats?: number;
   /** Rows run at once (default 1). */
@@ -961,7 +962,17 @@ async function runEval(h: Http, fn: number | string, o: EvalOptions): Promise<Ev
     // the server wants the field present; an empty list means "the function's newest version"
     const pins: Json = { mode: "user_run", snapshot_id: snapshot, repeats: o.repeats ?? 1, version_ids: [] };
     if (o.name) pins.name = o.name;
-    if (o.version !== undefined) pins.version_ids = [o.version];
+    if (o.version !== undefined) {
+      // `version` is the version NUMBER (2 for v2); the server pins an id, so look it up. Sending the number as an id
+      // pinned another function's version, or none, and the run sat "pending".
+      const known = (await h.request<Json[]>("GET", `/api/functions/${fnId}/versions`)) ?? [];
+      const match = known.find((v) => v.number === o.version);
+      if (!match) {
+        const have = known.map((v) => v.number as number).sort((a, b) => a - b).join(", ") || "none";
+        throw new Error(`this function has no version ${o.version} (it has: ${have}). \`version\` is the version number you see in the app, such as 2 for v2.`);
+      }
+      pins.version_ids = [match.id];
+    }
     if (o.scoreSet !== undefined) pins.plan_id = o.scoreSet;
     else {
       const ids = ((await h.request<Json[]>("GET", `/api/functions/${fnId}/scores`)) ?? []).map((s) => s.id);
@@ -1128,9 +1139,15 @@ class Deployments {
    *  the public runtime (put a minted fnk_* invoke key in place of the placeholder). Pass
    *  `confirm: true` to deploy over a breaking contract change. `model` (and `temperature`) is the
    *  model production calls run on: a version saved by the builder, YAML or the MCP tools names none,
-   *  so it needs one here (or a default model on the space), or the deploy is refused. */
+   *  so it needs one here (or a default model on the space), or the deploy is refused. `backupModel` is the
+   *  model used instead when the main one is down (a different model); leave it out to change nothing, pass
+   *  "" for no backup on purpose. Changing it is a redeploy of the same version, never a new version.
+   *  `modelSettings` is the model's run settings ({ temperature, max_output_tokens, reasoning_effort, thinking_budget_tokens }, only
+   *  the ones the model accepts); `temperature` is shorthand for { temperature }. `backupModelSettings` is the backup's own. An
+   *  unsupported setting or a value out of range is refused with the reason. */
   async deploy(fnId: number, versionId: number,
-               opts: { confirm?: boolean; model?: string; temperature?: number } = {}):
+               opts: { confirm?: boolean; model?: string; temperature?: number; backupModel?: string;
+                       modelSettings?: Record<string, number | string>; backupModelSettings?: Record<string, number | string> } = {}):
       Promise<S["DeploymentOut"] & { endpoint?: string; curl?: string }> {
     requireId(fnId, "fnId");
     requireId(versionId, "versionId");
@@ -1138,6 +1155,9 @@ class Deployments {
     if (opts.confirm) body.confirm = true;
     if (opts.model) body.model = opts.model;
     if (opts.temperature !== undefined) body.temperature = opts.temperature;
+    if (opts.backupModel !== undefined) body.backup_model = opts.backupModel;
+    if (opts.modelSettings) body.model_settings = opts.modelSettings;
+    if (opts.backupModelSettings) body.backup_model_settings = opts.backupModelSettings;
     const out = await this.h.request<Json>("POST", `/api/functions/${fnId}/deploy`, body);
     try { Object.assign(out, await this.curl(fnId)); } catch { /* the deploy worked; the snippet is a convenience */ }
     return out as S["DeploymentOut"] & { endpoint?: string; curl?: string };
@@ -2355,13 +2375,17 @@ export class FunctionDraft extends YamlView {
   /** Make a version live. Deploys the version from the most recent submit() — call submit()
    *  first if there are unsaved addX changes. Pass `model` to choose what production calls run on;
    *  without one the space's default model is used, and with neither the deploy is refused. */
-  async deploy(note = "", opts: { model?: string; temperature?: number } = {}): Promise<S["DeploymentOut"]> {
+  async deploy(note = "", opts: { model?: string; temperature?: number; backupModel?: string;
+                modelSettings?: Record<string, number | string>; backupModelSettings?: Record<string, number | string> } = {}): Promise<S["DeploymentOut"]> {
     if (this.lastVersion === null) {
       throw new Error("nothing to deploy yet — call submit() first.");
     }
     const body: Json = { version_id: this.lastVersion.id, note };
     if (opts.model) body.model = opts.model;
     if (opts.temperature !== undefined) body.temperature = opts.temperature;
+    if (opts.backupModel !== undefined) body.backup_model = opts.backupModel;     // the model used when the main one is down; "" = none
+    if (opts.modelSettings) body.model_settings = opts.modelSettings;
+    if (opts.backupModelSettings) body.backup_model_settings = opts.backupModelSettings;
     return this.h.request("POST", `/api/functions/${this.id}/deploy`, body);
   }
 }

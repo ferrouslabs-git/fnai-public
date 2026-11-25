@@ -1022,7 +1022,9 @@ class _Deployments:
         self._h = http
 
     def deploy(self, fn_id: int, version_id: int, *, confirm: bool = False,
-               model: Optional[str] = None, temperature: Optional[float] = None) -> dict:
+               model: Optional[str] = None, temperature: Optional[float] = None,
+               backup_model: Optional[str] = None, model_settings: Optional[dict] = None,
+               backup_model_settings: Optional[dict] = None) -> dict:
         """Deploy a version. The result also carries `endpoint` and `curl` —
         a ready-to-run call against the public runtime (put a minted fnk_*
         invoke key in place of the placeholder; see keys.invoke.mint).
@@ -1030,7 +1032,16 @@ class _Deployments:
         `model` (and optionally `temperature`) is the model production calls are
         served with. A version saved by the builder, `load_yaml` or the MCP tools
         names no model, so it needs one here, or the space needs a default model;
-        otherwise the deploy is refused rather than served by the mock."""
+        otherwise the deploy is refused rather than served by the mock.
+
+        `backup_model` is the model used instead when the main one is down (it must be a different model). Leave it out to change
+        nothing (an older version-level backup, if there is one, keeps applying); pass "" for no backup on purpose. Changing the
+        backup is a redeploy of the same version, never a new version.
+
+        `model_settings` is the model's run settings, `{"temperature": 0.2, "max_output_tokens": 4000, "reasoning_effort": "high",
+        "thinking_budget_tokens": 2000}` (only the ones the model accepts: `models.list()` says which). `temperature=` is shorthand
+        for `{"temperature": ...}`. `backup_model_settings` is the backup's own. A setting the model does not support, or a value
+        out of range, is refused with the reason."""
         _require_id(fn_id, "fn_id")
         _require_id(version_id, "version_id")
         body: dict[str, Any] = {"version_id": version_id}
@@ -1040,6 +1051,12 @@ class _Deployments:
             body["model"] = model
         if temperature is not None:
             body["temperature"] = temperature
+        if backup_model is not None:
+            body["backup_model"] = backup_model
+        if model_settings:
+            body["model_settings"] = model_settings
+        if backup_model_settings:
+            body["backup_model_settings"] = backup_model_settings
         out = self._h("POST", f"/api/functions/{fn_id}/deploy", body)
         if isinstance(out, dict):
             try:
@@ -2554,12 +2571,14 @@ class FunctionDraft(_FunctionYaml):
                 and canon(version.get("output_schema")) == canon(body.get("output_schema")))
 
     def deploy(self, note: str = "", *, model: Optional[str] = None,
-               temperature: Optional[float] = None) -> dict:
+               temperature: Optional[float] = None, backup_model: Optional[str] = None,
+               model_settings: Optional[dict] = None, backup_model_settings: Optional[dict] = None) -> dict:
         """Make a version live. Deploys the version from the most recent
         submit() — call submit() first if there are unsaved add_* changes.
         Pass `model` (e.g. "gpt-4o-mini") to choose what production calls run on;
         without one the space's default model is used, and with neither the deploy
-        is refused."""
+        is refused. `backup_model` is the model used instead when the main one is down
+        (leave it out to change nothing; "" means no backup)."""
         if self.last_version is None:
             raise ValueError("nothing to deploy yet — call submit() first.")
         body: dict[str, Any] = {"version_id": self.last_version["id"], "note": note}
@@ -2567,6 +2586,12 @@ class FunctionDraft(_FunctionYaml):
             body["model"] = model
         if temperature is not None:
             body["temperature"] = temperature
+        if backup_model is not None:
+            body["backup_model"] = backup_model
+        if model_settings:
+            body["model_settings"] = model_settings
+        if backup_model_settings:
+            body["backup_model_settings"] = backup_model_settings
         return self._h("POST", f"/api/functions/{self.id}/deploy", body)
 
 
@@ -3518,7 +3543,15 @@ def run_eval(http: "_Http", function: "int | str", *, task: Any, dataset: "int |
         if name:
             pins["name"] = name
         if version is not None:
-            pins["version_ids"] = [int(version)]
+            # `version` is the version NUMBER (v1, v2 …); the server pins an id. Look the id up: sending the number as an id
+            # pinned another function's version, or none, and the run sat "pending".
+            known = http("GET", f"/api/functions/{fn_id}/versions") or []
+            match = next((v for v in known if v.get("number") == int(version)), None)
+            if match is None:
+                have = ", ".join(str(v.get("number")) for v in sorted(known, key=lambda v: v.get("number") or 0)) or "none"
+                raise ValueError(f"this function has no version {int(version)} (it has: {have}). `version` is the version "
+                                 "number you see in the app, such as 2 for v2.")
+            pins["version_ids"] = [match["id"]]
         if score_set is not None:
             pins["plan_id"] = int(score_set)
         else:
@@ -3635,7 +3668,7 @@ def eval(function: "int | str", *, task: Any, dataset: "int | str | None" = None
     wrapped as {"output": value}) is the answer. Inside `task`, @traced tools and wrapped OpenAI / Anthropic clients
     record their steps. A `task` that raises fails that row only — the run goes on. `task` may be async.
 
-    function: id or slug. dataset: id or name (default: the newest one) — a fresh snapshot is taken; or pass
+    function: id or slug. version: the version NUMBER to test (2 for v2; a draft is fine; default: the newest). dataset: id or name (default: the newest one) — a fresh snapshot is taken; or pass
     `snapshot=` to use one. `resume=<experiment id>` carries on a run that stopped part-way (rows already sent are
     skipped). It waits (up to `wait_timeout` seconds, default 600) for the scoring to finish. score_set: the Score Set id (default: every check on the function). Authentication:
     `token=` or the FNAI_TOKEN environment variable (a personal access token). Returns

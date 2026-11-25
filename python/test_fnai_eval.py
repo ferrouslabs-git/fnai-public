@@ -39,6 +39,8 @@ class _Fake:
                 p = self.path.split("?")[0]
                 if p == "/api/functions/5/datasets":
                     return self._send([{"id": 1, "name": "old"}, {"id": 2, "name": "tickets"}])
+                if p == "/api/functions/5/versions":
+                    return self._send([{"id": 502, "number": 2}, {"id": 503, "number": 3}])
                 if p == "/api/functions/5/scores":
                     return self._send([{"id": 11}, {"id": 12}])
                 if p == "/api/experiments/9/user-run/rows":
@@ -102,6 +104,17 @@ class Eval(unittest.TestCase):
 
     def run_eval(self, task, **kw):
         return fnai.eval(5, task=task, dataset="tickets", score_set=4, base_url=self.fake.url, **kw)
+
+    def test_version_is_a_number_and_the_runs_pins_that_versions_id(self):
+        self.run_eval(lambda inp: {"answer": "x"}, version=3)
+        self.assertEqual(self.fake.created[0]["version_ids"], [503])            # not [3]: a number is not an id
+
+    def test_an_unknown_version_number_is_a_clear_error_and_nothing_is_created(self):
+        with self.assertRaises(ValueError) as cm:
+            self.run_eval(lambda inp: {"answer": "x"}, version=9)
+        self.assertIn("no version 9", str(cm.exception))
+        self.assertIn("it has: 2, 3", str(cm.exception))
+        self.assertEqual(self.fake.created, [])
 
     def test_each_row_goes_through_the_task_and_the_results_are_sent_then_finished(self):
         res = self.run_eval(lambda inp: {"answer": inp["q"].upper()})

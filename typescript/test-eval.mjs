@@ -17,6 +17,7 @@ function fake({ rows = 3, passRate = 1, received = [], putStatuses = [], finishS
     const body = opts.body ? JSON.parse(opts.body) : {};
     const reply = (obj, status = 200) => ({ status, ok: status < 300, text: async () => JSON.stringify(obj), json: async () => obj, headers: new Map() });
     if (m === "GET" && p === "/api/functions/5/datasets") return reply([{ id: 1, name: "old" }, { id: 2, name: "tickets" }]);
+    if (m === "GET" && p === "/api/functions/5/versions") return reply([{ id: 502, number: 2 }, { id: 503, number: 3 }]);
     if (m === "GET" && p === "/api/functions/5/scores") return reply([{ id: 11 }, { id: 12 }]);
     if (m === "POST" && p === "/api/datasets/2/snapshot") return reply({ id: 77 });
     if (m === "POST" && p === "/api/functions/5/experiments") { st.created.push(body); return reply({ id: 9 }); }
@@ -34,6 +35,17 @@ function fake({ rows = 3, passRate = 1, received = [], putStatuses = [], finishS
     return reply({ detail: `nope ${m} ${p}` }, 404);
   };
   return st;
+}
+
+// `version` is a version NUMBER: the run pins that version's id, and an unknown number is a clear error
+{
+  const st = fake();
+  await evaluate(5, { task: async () => ({ answer: "x" }), dataset: "tickets", scoreSet: 4, version: 3, baseUrl: BASE });
+  assert.deepEqual(st.created[0].version_ids, [503]);        // not [3]: a number is not an id
+  const st2 = fake();
+  await assert.rejects(() => evaluate(5, { task: async () => ({ answer: "x" }), dataset: "tickets", scoreSet: 4, version: 9, baseUrl: BASE }),
+    /no version 9 \(it has: 2, 3\)/);
+  assert.deepEqual(st2.created, []);
 }
 
 // every row goes through the task, results are sent, the experiment is finished and summarised

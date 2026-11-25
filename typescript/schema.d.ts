@@ -1262,6 +1262,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/costs/tool-calls": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Tool Calls
+         * @description FNA-REQ-395: every tool call that ran, per tool, for the whole organisation (all its spaces), straight from the usage
+         *     events the calls wrote: free tools and failed calls included, nothing priced here. Read-only. Org-wide like /usage above:
+         *     the usage table's row security is per space, so this re-points the space setting for each one (and reads the rows that
+         *     belong to no space once), then puts the caller's own space back.
+         */
+        get: operations["tool_calls"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/provider-keys": {
         parameters: {
             query?: never;
@@ -3941,6 +3964,132 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/tool-servers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Servers */
+        get: operations["list_servers"];
+        put?: never;
+        /** Create Server */
+        post: operations["create_server"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/tool-servers/oauth/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Oauth Start
+         * @description FNA-REQ-559: begin signing in to an MCP server on its own website. Returns the service's login address to open in a window.
+         */
+        post: operations["oauth_start"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/tool-servers/{server_id}/disconnect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Disconnect Server
+         * @description FNA-REQ-559: forget the sign-in (tokens, the gateway's copy and its target). The picked tools stay but fail until signed in again.
+         */
+        post: operations["disconnect_server"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/tool-servers/{server_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Server */
+        get: operations["get_server"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/tool-servers/{server_id}/tools": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Pick Server Tools */
+        post: operations["pick_server_tools"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/tool-servers/{server_id}/discover": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Discover Server */
+        post: operations["discover_server"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/tool-servers/{server_id}/refresh": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Refresh Server */
+        post: operations["refresh_server"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/health": {
         parameters: {
             query?: never;
@@ -4476,6 +4625,16 @@ export interface components {
             model?: string | null;
             /** Temperature */
             temperature?: number | null;
+            /** Backup Model */
+            backup_model?: string | null;
+            /** Model Settings */
+            model_settings?: {
+                [key: string]: unknown;
+            } | null;
+            /** Backup Model Settings */
+            backup_model_settings?: {
+                [key: string]: unknown;
+            } | null;
         };
         /** DeployRequestDecisionIn */
         DeployRequestDecisionIn: {
@@ -4513,6 +4672,16 @@ export interface components {
             model?: string | null;
             /** Temperature */
             temperature?: number | null;
+            /** Backup Model */
+            backup_model?: string | null;
+            /** Model Settings */
+            model_settings?: {
+                [key: string]: unknown;
+            } | null;
+            /** Backup Model Settings */
+            backup_model_settings?: {
+                [key: string]: unknown;
+            } | null;
         };
         /** DeploymentOut */
         DeploymentOut: {
@@ -4543,6 +4712,31 @@ export interface components {
             model?: string | null;
             /** Temperature */
             temperature?: number | null;
+            /** Backup Model */
+            backup_model?: string | null;
+            /** Model Settings */
+            model_settings?: {
+                [key: string]: unknown;
+            } | null;
+            /** Backup Model Settings */
+            backup_model_settings?: {
+                [key: string]: unknown;
+            } | null;
+        };
+        /** DiscoveredToolOut */
+        DiscoveredToolOut: {
+            /** Name */
+            name: string;
+            /** Description */
+            description: string;
+            /** Input Schema */
+            input_schema: {
+                [key: string]: unknown;
+            };
+            /** Output Schema */
+            output_schema?: {
+                [key: string]: unknown;
+            } | null;
         };
         /**
          * DowngradeSweepOut
@@ -6028,6 +6222,10 @@ export interface components {
             tier?: string | null;
             /** Sort Order */
             sort_order?: number | null;
+            /** Settings Schema */
+            settings_schema?: {
+                [key: string]: unknown;
+            } | null;
         };
         /** ModelOut */
         ModelOut: {
@@ -6043,6 +6241,15 @@ export interface components {
             usable: boolean;
             /** Reason */
             reason?: string | null;
+            /**
+             * Settings
+             * @default {}
+             */
+            settings: {
+                [key: string]: {
+                    [key: string]: unknown;
+                };
+            };
         };
         /** ModelPriceOut */
         ModelPriceOut: {
@@ -6852,6 +7059,10 @@ export interface components {
              * @default 0.2
              */
             temperature: number;
+            /** Settings */
+            settings?: {
+                [key: string]: unknown;
+            } | null;
             /** Context */
             context?: {
                 [key: string]: unknown;
@@ -7020,6 +7231,10 @@ export interface components {
             sort_order: number;
             /** Tier */
             tier?: string | null;
+            /** Settings Schema */
+            settings_schema?: {
+                [key: string]: unknown;
+            } | null;
             /**
              * Created At
              * Format: date-time
@@ -7890,6 +8105,31 @@ export interface components {
             /** Revoked At */
             revoked_at?: string | null;
         };
+        /** ToolCallRow */
+        ToolCallRow: {
+            /** Tool */
+            tool: string;
+            /** Kind */
+            kind: string;
+            /** Calls */
+            calls: number;
+            /** Failed */
+            failed: number;
+            /** Last Called At */
+            last_called_at?: string | null;
+        };
+        /**
+         * ToolCallsOut
+         * @description FNA-REQ-395: how many times each tool ran for this organization, free calls and failed ones included.
+         */
+        ToolCallsOut: {
+            /** Calls */
+            calls: number;
+            /** Failed */
+            failed: number;
+            /** By Tool */
+            by_tool: components["schemas"]["ToolCallRow"][];
+        };
         /** ToolCreate */
         ToolCreate: {
             /** Name */
@@ -7946,6 +8186,12 @@ export interface components {
             credential?: {
                 [key: string]: unknown;
             } | null;
+            /**
+             * Scope
+             * @default space
+             * @enum {string}
+             */
+            scope: "space" | "account";
         };
         /** ToolInfoOut */
         ToolInfoOut: {
@@ -7965,6 +8211,8 @@ export interface components {
             target?: {
                 [key: string]: unknown;
             } | null;
+            /** Scope */
+            scope?: string | null;
         };
         /** ToolMockProposalIn */
         ToolMockProposalIn: {
@@ -8048,6 +8296,171 @@ export interface components {
             created_at: string;
             /** Gateway Tool Name */
             gateway_tool_name?: string | null;
+            /**
+             * Scope
+             * @default space
+             */
+            scope: string;
+        };
+        /** ToolServerChangedOut */
+        ToolServerChangedOut: {
+            /** Name */
+            name: string;
+            /** Old Input Schema */
+            old_input_schema: {
+                [key: string]: unknown;
+            };
+            /** Input Schema */
+            input_schema: {
+                [key: string]: unknown;
+            };
+        };
+        /** ToolServerCreate */
+        ToolServerCreate: {
+            /** Name */
+            name: string;
+            /** Url */
+            url: string;
+            /**
+             * Scope
+             * @default space
+             * @enum {string}
+             */
+            scope: "space" | "account";
+            /** Credential */
+            credential?: {
+                [key: string]: unknown;
+            } | null;
+        };
+        /** ToolServerCreatedOut */
+        ToolServerCreatedOut: {
+            server: components["schemas"]["ToolServerOut"];
+            /** Tools */
+            tools: components["schemas"]["DiscoveredToolOut"][];
+        };
+        /** ToolServerDetailOut */
+        ToolServerDetailOut: {
+            server: components["schemas"]["ToolServerOut"];
+            /** Tools */
+            tools: components["schemas"]["ToolServerToolOut"][];
+        };
+        /** ToolServerDiffOut */
+        ToolServerDiffOut: {
+            /** Added */
+            added: components["schemas"]["DiscoveredToolOut"][];
+            /** Changed */
+            changed: components["schemas"]["ToolServerChangedOut"][];
+            /** Removed */
+            removed: components["schemas"]["ToolServerRemovedOut"][];
+            /** Unchanged */
+            unchanged: string[];
+        };
+        /**
+         * ToolServerOAuthStart
+         * @description Start signing in to a server on its own website. A new server gives name, url and scope; signing in again to an existing one gives
+         *     only `server_id`. `scopes` (optional) asks for named permissions the service lists; the default is read-only ones.
+         */
+        ToolServerOAuthStart: {
+            /** Name */
+            name?: string | null;
+            /** Url */
+            url?: string | null;
+            /**
+             * Scope
+             * @default space
+             * @enum {string}
+             */
+            scope: "space" | "account";
+            /** Server Id */
+            server_id?: number | null;
+            /** Scopes */
+            scopes?: string[] | null;
+        };
+        /** ToolServerOAuthStarted */
+        ToolServerOAuthStarted: {
+            /** Authorization Url */
+            authorization_url: string;
+            /** Redirect Uri */
+            redirect_uri: string;
+        };
+        /** ToolServerOut */
+        ToolServerOut: {
+            /** Id */
+            id: number;
+            /** Name */
+            name: string;
+            /** Url */
+            url: string;
+            /** Scope */
+            scope: string;
+            /** Auth Kind */
+            auth_kind: string;
+            /** Has Credential */
+            has_credential: boolean;
+            /** Status */
+            status: string;
+            /** Gateway Target */
+            gateway_target?: string | null;
+            /**
+             * Tool Count
+             * @default 0
+             */
+            tool_count: number;
+            /** Last Discovered At */
+            last_discovered_at?: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Oauth Status */
+            oauth_status?: string | null;
+            /** Oauth Expires At */
+            oauth_expires_at?: string | null;
+            /** Oauth Service */
+            oauth_service?: string | null;
+        };
+        /** ToolServerPick */
+        ToolServerPick: {
+            /** Name */
+            name: string;
+            /**
+             * Effect
+             * @default side_effecting
+             */
+            effect: string;
+        };
+        /** ToolServerPickedOut */
+        ToolServerPickedOut: {
+            /** Tools */
+            tools: components["schemas"]["ToolServerToolOut"][];
+        };
+        /** ToolServerPicks */
+        ToolServerPicks: {
+            /** Tools */
+            tools: components["schemas"]["ToolServerPick"][];
+        };
+        /** ToolServerRemovedOut */
+        ToolServerRemovedOut: {
+            /** Name */
+            name: string;
+            /** Tool Id */
+            tool_id: number;
+        };
+        /** ToolServerToolOut */
+        ToolServerToolOut: {
+            /** Id */
+            id: number;
+            /** Name */
+            name: string;
+            /** Description */
+            description: string;
+            /** Effect */
+            effect: string;
+            /** Status */
+            status: string;
+            /** Version */
+            version: number;
         };
         /** ToolTestIn */
         ToolTestIn: {
@@ -8151,6 +8564,8 @@ export interface components {
             version_number: number;
             /** Space Id */
             space_id?: string | null;
+            /** Space Name */
+            space_name?: string | null;
             /** Deployed */
             deployed: boolean;
             /** Deployed At */
@@ -11642,6 +12057,45 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["OrgUsageOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    tool_calls: {
+        parameters: {
+            query?: {
+                start?: string | null;
+                end?: string | null;
+            };
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ToolCallsOut"];
                 };
             };
             /** @description Validation Error */
@@ -17823,6 +18277,316 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ReviewOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_servers: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ToolServerOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_server: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ToolServerCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ToolServerCreatedOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    oauth_start: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ToolServerOAuthStart"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ToolServerOAuthStarted"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    disconnect_server: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                server_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ToolServerOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_server: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                server_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ToolServerDetailOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    pick_server_tools: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                server_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ToolServerPicks"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ToolServerPickedOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    discover_server: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                server_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ToolServerDiffOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    refresh_server: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+                "x-account"?: string | null;
+                "x-space"?: string | null;
+                "x-dev-user"?: string | null;
+                "x-dev-account"?: string | null;
+                "x-dev-space"?: string | null;
+            };
+            path: {
+                server_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ToolServerDiffOut"];
                 };
             };
             /** @description Validation Error */

@@ -1477,6 +1477,18 @@ func (d *FunctionDraft) Deploy(note string) (*DeploymentOut, error) {
 // DeployWithModel is Deploy with the model production calls run on. Without one the space's default model
 // is used, and with neither the deploy is refused.
 func (d *FunctionDraft) DeployWithModel(note, model string, temperature *float64) (*DeploymentOut, error) {
+	return d.DeployWithBackup(note, model, temperature, nil)
+}
+
+// DeployWithBackup is DeployWithModel plus a backup model, used instead when the main one is down. nil changes nothing; a
+// pointer to "" means no backup on purpose.
+func (d *FunctionDraft) DeployWithBackup(note, model string, temperature *float64, backupModel *string) (*DeploymentOut, error) {
+	return d.DeployWithOptions(note, DeployOptions{Model: model, Temperature: temperature, BackupModel: backupModel})
+}
+
+// DeployWithOptions is Deploy with every run choice in one place (see DeployOptions).
+func (d *FunctionDraft) DeployWithOptions(note string, o DeployOptions) (*DeploymentOut, error) {
+	model, temperature, backupModel := o.Model, o.Temperature, o.BackupModel
 	if d.LastVersion == nil {
 		return nil, validationErrorf("nothing to deploy yet — call Submit() first.")
 	}
@@ -1486,6 +1498,15 @@ func (d *FunctionDraft) DeployWithModel(note, model string, temperature *float64
 	}
 	if temperature != nil {
 		body["temperature"] = *temperature
+	}
+	if backupModel != nil {
+		body["backup_model"] = *backupModel
+	}
+	if len(o.ModelSettings) > 0 {
+		body["model_settings"] = o.ModelSettings
+	}
+	if len(o.BackupModelSettings) > 0 {
+		body["backup_model_settings"] = o.BackupModelSettings
 	}
 	var out DeploymentOut
 	return &out, d.h.do("POST", "/api/functions/"+strconv.Itoa(d.ID)+"/deploy", body, nil, &out)

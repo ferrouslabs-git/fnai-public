@@ -279,10 +279,15 @@ func (s *DeploymentsService) Curl(fnID int, apiKey string) (endpoint, curl strin
 
 // DeployConfirmed deploys a version even over a breaking contract change against the live one.
 func (s *DeploymentsService) DeployConfirmed(fnID, versionID int) (*DeploymentOut, error) {
-	return s.deploy(fnID, versionID, true, "", nil)
+	return s.deploy(fnID, versionID, true, "", nil, nil)
 }
 
-func (s *DeploymentsService) deploy(fnID, versionID int, confirm bool, model string, temperature *float64) (*DeploymentOut, error) {
+func (s *DeploymentsService) deploy(fnID, versionID int, confirm bool, model string, temperature *float64, backupModel *string) (*DeploymentOut, error) {
+	return s.deployOpts(fnID, versionID, confirm, DeployOptions{Model: model, Temperature: temperature, BackupModel: backupModel})
+}
+
+func (s *DeploymentsService) deployOpts(fnID, versionID int, confirm bool, o DeployOptions) (*DeploymentOut, error) {
+	model, temperature, backupModel := o.Model, o.Temperature, o.BackupModel
 	if err := requireID(fnID, "fnID"); err != nil {
 		return nil, err
 	}
@@ -298,6 +303,15 @@ func (s *DeploymentsService) deploy(fnID, versionID int, confirm bool, model str
 	}
 	if temperature != nil {
 		body["temperature"] = *temperature
+	}
+	if backupModel != nil {
+		body["backup_model"] = *backupModel
+	}
+	if len(o.ModelSettings) > 0 {
+		body["model_settings"] = o.ModelSettings
+	}
+	if len(o.BackupModelSettings) > 0 {
+		body["backup_model_settings"] = o.BackupModelSettings
 	}
 	var out DeploymentOut
 	if err := s.h.do("POST", "/api/functions/"+strconv.Itoa(fnID)+"/deploy", body, nil, &out); err != nil {

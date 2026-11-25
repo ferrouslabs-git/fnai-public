@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Fixed: `evaluate(..., { version })` tested the wrong version.** `version` is the version *number* (2 for v2) but was sent as a version *id*, so the run pinned another function's version, or none, and sat "pending". The id is now looked up, and an unknown number is a clear error that lists the numbers the function has.
+
 ## 0.11.0 — 2026-11-19
 
 - **New: a quickstart, reference pages and example agents for testing your own AI.** `docs/quickstart.md` takes you from two keys to a traced call and a scored test run in five minutes (Python and TypeScript); `docs/` also has pages on tracing, keys, prompts, tests run by your own code, declared tools, live scoring and space keys; `examples/` has a plain OpenAI agent and a LangGraph agent. These now ship with the SDK.

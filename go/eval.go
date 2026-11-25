@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -73,7 +74,7 @@ type EvalOptions struct {
 	Snapshot    int    // use this snapshot instead of taking one
 	ScoreSet    int    // the Score Set id; default: every check on the function
 	Name        string // a name for the experiment
-	Version     int    // the version to link the results to (default: the function's newest)
+	Version     int    // the version NUMBER to test (2 for v2; a draft is fine; default: the function's newest)
 	Repeats     int    // default 1
 	Concurrency int    // rows at once, default 1
 	Resume      int    // carry on an experiment that stopped part-way; rows already sent are skipped
@@ -312,7 +313,27 @@ func (s *EvalService) Run(fnID int, task EvalTask, opts EvalOptions) (*EvalResul
 			pins["name"] = opts.Name
 		}
 		if opts.Version != 0 {
-			pins["version_ids"] = []int{opts.Version}
+			// Version is the version NUMBER (2 for v2); the server pins an id, so look it up. Sending the number as an id
+			// pinned another function's version, or none, and the run sat "pending".
+			var known []struct {
+				ID     int `json:"id"`
+				Number int `json:"number"`
+			}
+			if err := s.h.do("GET", "/api/functions/"+fn+"/versions", nil, nil, &known); err != nil {
+				return nil, err
+			}
+			versionID, have := 0, []string{}
+			for _, v := range known {
+				have = append(have, strconv.Itoa(v.Number))
+				if v.Number == opts.Version {
+					versionID = v.ID
+				}
+			}
+			if versionID == 0 {
+				return nil, validationErrorf("this function has no version %d (it has: %s). Version is the version number you see in the app, such as 2 for v2.",
+					opts.Version, strings.Join(have, ", "))
+			}
+			pins["version_ids"] = []int{versionID}
 		}
 		if opts.ScoreSet != 0 {
 			pins["plan_id"] = opts.ScoreSet

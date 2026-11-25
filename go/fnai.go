@@ -383,6 +383,13 @@ type DeploymentOut struct {
 	// Model and Temperature are what this deployment serves with; Model is empty when the version names its own.
 	Model       string   `json:"model,omitempty"`
 	Temperature *float64 `json:"temperature,omitempty"`
+	// BackupModel is the model used instead when the main one is down: nil on an older deployment (the version's own
+	// backup, if it names one, still applies), "" when there is none on purpose.
+	BackupModel *string `json:"backup_model,omitempty"`
+	// ModelSettings and BackupModelSettings are the run settings chosen at deploy (temperature, max_output_tokens,
+	// reasoning_effort, thinking_budget_tokens); nil on an older deployment, whose Temperature still applies.
+	ModelSettings       map[string]any `json:"model_settings,omitempty"`
+	BackupModelSettings map[string]any `json:"backup_model_settings,omitempty"`
 	// Endpoint and Curl are filled by Deploy: a ready-to-run call against the public runtime (put a
 	// minted fnk_* invoke key in place of the placeholder).
 	Endpoint string `json:"endpoint,omitempty"`
@@ -778,14 +785,37 @@ func (s *DatasetsService) Create(fnID int, name string, rows []map[string]any) (
 type DeploymentsService struct{ h *httpClient }
 
 func (s *DeploymentsService) Deploy(fnID, versionID int) (*DeploymentOut, error) {
-	return s.deploy(fnID, versionID, false, "", nil)
+	return s.deploy(fnID, versionID, false, "", nil, nil)
 }
 
 // DeployWithModel deploys a version served by `model` (and optionally `temperature`). A version saved by the
 // builder, YAML or the MCP tools names no model, so it needs one here (or a default model on the space);
 // otherwise the deploy is refused rather than served by the mock.
 func (s *DeploymentsService) DeployWithModel(fnID, versionID int, model string, temperature *float64) (*DeploymentOut, error) {
-	return s.deploy(fnID, versionID, false, model, temperature)
+	return s.deploy(fnID, versionID, false, model, temperature, nil)
+}
+
+// DeployOptions is everything a deploy can choose besides the version. Model, Temperature and BackupModel work as in DeployWithBackup;
+// ModelSettings is the model's run settings ({"reasoning_effort": "high", "max_output_tokens": 4000}, only the ones the model accepts)
+// and BackupModelSettings is the backup's own. A setting the model does not support, or a value out of range, is refused with the reason.
+type DeployOptions struct {
+	Model               string
+	Temperature         *float64
+	BackupModel         *string
+	ModelSettings       map[string]any
+	BackupModelSettings map[string]any
+}
+
+// DeployWithOptions deploys a version with every run choice in one place.
+func (s *DeploymentsService) DeployWithOptions(fnID, versionID int, o DeployOptions) (*DeploymentOut, error) {
+	return s.deployOpts(fnID, versionID, false, o)
+}
+
+// DeployWithBackup is DeployWithModel plus a backup model: the one used instead when the main model is down (a
+// different model). Pass nil to change nothing (an older version-level backup keeps applying); a pointer to "" means
+// no backup on purpose. Changing the backup is a redeploy of the same version, never a new version.
+func (s *DeploymentsService) DeployWithBackup(fnID, versionID int, model string, temperature *float64, backupModel *string) (*DeploymentOut, error) {
+	return s.deploy(fnID, versionID, false, model, temperature, backupModel)
 }
 
 func (s *DeploymentsService) Current(fnID int) (*DeploymentOut, error) {

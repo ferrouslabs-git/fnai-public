@@ -639,6 +639,39 @@ class FunctionDraftTests(unittest.TestCase):
         _Deployments(h).deploy(3, 4)
         self.assertEqual(next(c for c in h.calls if c[1].endswith("/deploy"))[2], {"version_id": 4})
 
+    def test_the_backup_model_is_sent_only_when_asked_and_empty_means_none_on_purpose(self):
+        from fnai import _Deployments
+        for kwargs, expected in (({"backup_model": "claude-haiku"}, {"version_id": 4, "backup_model": "claude-haiku"}),
+                                 ({"backup_model": ""}, {"version_id": 4, "backup_model": ""}),
+                                 ({}, {"version_id": 4})):
+            h = _RecHttp()
+            _Deployments(h).deploy(3, 4, **kwargs)
+            self.assertEqual(next(c for c in h.calls if c[1].endswith("/deploy"))[2], expected)
+
+    def test_a_draft_deploy_sends_the_backup_model(self):
+        http = _FakeDraftHttp()
+        draft = FunctionDraft.create(http, name="Invoice Extractor")
+        draft.add_output("total", type="number")
+        draft.add_step("Extract the total.")
+        v = draft.submit()
+        draft.deploy(note="go live", model="gpt-4o-mini", backup_model="claude-haiku")
+        deploy_call = next(c for c in http.calls if c[1].endswith("/deploy"))
+        self.assertEqual(deploy_call[2], {"version_id": v["id"], "note": "go live", "model": "gpt-4o-mini",
+                                          "backup_model": "claude-haiku"})
+
+    def test_model_settings_are_sent_only_when_given_and_the_backup_has_its_own(self):
+        from fnai import _Deployments
+        h = _RecHttp()
+        _Deployments(h).deploy(3, 4, model="gpt-6.2-sol", model_settings={"reasoning_effort": "high", "max_output_tokens": 4000},
+                               backup_model="claude-haiku", backup_model_settings={"thinking_budget_tokens": 2000})
+        self.assertEqual(next(c for c in h.calls if c[1].endswith("/deploy"))[2], {
+            "version_id": 4, "model": "gpt-6.2-sol", "model_settings": {"reasoning_effort": "high", "max_output_tokens": 4000},
+            "backup_model": "claude-haiku", "backup_model_settings": {"thinking_budget_tokens": 2000}})
+        h = _RecHttp()
+        _Deployments(h).deploy(3, 4, model="gpt-4o", temperature=0.2)          # the shorthand still works, and nothing extra is sent
+        self.assertEqual(next(c for c in h.calls if c[1].endswith("/deploy"))[2],
+                         {"version_id": 4, "model": "gpt-4o", "temperature": 0.2})
+
     def test_models_list_calls_the_model_list_endpoint(self):
         from fnai import _Models
         h = _RecHttp()

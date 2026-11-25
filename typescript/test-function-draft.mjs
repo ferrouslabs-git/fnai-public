@@ -182,6 +182,41 @@ function jsonResponse(status, body) {
   console.log("OK: deploy() uses the version from the last submit()");
 }
 
+// ── deploy() sends the backup model only when asked (FNA-REQ-487) ───────────
+{
+  const bodies = [];
+  fakeFetch((url, opts) => {
+    if (url.startsWith(`${BASE}/api/functions?`) && opts.method === "GET") return jsonResponse(200, []);
+    if (url === `${BASE}/api/functions` && opts.method === "POST") {
+      const body = JSON.parse(opts.body);
+      return jsonResponse(200, { id: 60, slug: body.slug, name: body.name, input_schema: {}, output_schema: {} });
+    }
+    if (url === `${BASE}/api/functions/60/submit` && opts.method === "POST") return jsonResponse(200, { id: 500, number: 1, status: "draft" });
+    if (url === `${BASE}/api/functions/60/deploy` && opts.method === "POST") {
+      bodies.push(JSON.parse(opts.body));
+      return jsonResponse(200, { id: 9, status: "active", version_id: 500 });
+    }
+    throw new Error(`unexpected request: ${opts.method} ${url}`);
+  });
+  const client = new Client({ token: "fnp_x", baseUrl: BASE });
+  const draft = await client.draft({ name: "Invoice Extractor" });
+  draft.addOutput("total", { type: "number" });
+  draft.addStep("Extract the total.");
+  await draft.submit();
+  await draft.deploy("a", { model: "gpt-4o-mini", backupModel: "claude-haiku" });
+  await draft.deploy("b", { model: "gpt-4o-mini", backupModel: "" });
+  await draft.deploy("c", { model: "gpt-4o-mini" });
+  assert.equal(bodies[0].backup_model, "claude-haiku");
+  assert.equal(bodies[1].backup_model, "");                       // "" is sent: no backup, on purpose
+  assert.equal("backup_model" in bodies[2], false);               // left out: nothing changes
+  await draft.deploy("d", { model: "gpt-6.2-sol", modelSettings: { reasoning_effort: "high" }, backupModel: "claude-haiku",
+                            backupModelSettings: { thinking_budget_tokens: 2000 } });
+  assert.deepEqual(bodies[3].model_settings, { reasoning_effort: "high" });
+  assert.deepEqual(bodies[3].backup_model_settings, { thinking_budget_tokens: 2000 });
+  assert.equal("model_settings" in bodies[2], false);             // none given: none sent
+  console.log("OK: deploy() sends backupModel and the model settings only when asked");
+}
+
 // ── deploy() before any submit() throws ─────────────────────────────────────
 {
   fakeFetch((url, opts) => {

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -141,6 +142,85 @@ func TestDeployUsesTheVersionFromTheLastSubmit(t *testing.T) {
 	}
 	if dep.VersionID != v.ID || dep.Status != "active" {
 		t.Fatalf("unexpected deployment: %+v", dep)
+	}
+}
+
+func TestDeployWithBackupSendsItOnlyWhenAsked(t *testing.T) {
+	var bodies []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "/deploy") {
+			var b map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&b)
+			bodies = append(bodies, b)
+			_, _ = w.Write([]byte(`{"id":9,"function_id":3,"version_id":4,"status":"active","action":"deploy","backup_model":"claude-haiku"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"endpoint":"","curl":""}`))
+	}))
+	defer srv.Close()
+	c := NewClient("fnp_x", WithBaseURL(srv.URL))
+	backup, none := "claude-haiku", ""
+	dep, err := c.Deployments.DeployWithBackup(3, 4, "gpt-4o-mini", nil, &backup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dep.BackupModel == nil || *dep.BackupModel != "claude-haiku" {
+		t.Fatalf("the deployment should report its backup: %+v", dep)
+	}
+	if _, err := c.Deployments.DeployWithBackup(3, 4, "gpt-4o-mini", nil, &none); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Deployments.DeployWithModel(3, 4, "gpt-4o-mini", nil); err != nil {
+		t.Fatal(err)
+	}
+	if bodies[0]["backup_model"] != "claude-haiku" {
+		t.Fatalf("the backup should be sent: %v", bodies[0])
+	}
+	if v, ok := bodies[1]["backup_model"]; !ok || v != "" {
+		t.Fatalf("an empty backup means none on purpose and must be sent: %v", bodies[1])
+	}
+	if _, ok := bodies[2]["backup_model"]; ok {
+		t.Fatalf("a deploy that did not ask for one must not send a backup: %v", bodies[2])
+	}
+}
+
+func TestDeployWithOptionsSendsTheModelSettingsOnlyWhenGiven(t *testing.T) {
+	var bodies []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "/deploy") {
+			var b map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&b)
+			bodies = append(bodies, b)
+			_, _ = w.Write([]byte(`{"id":9,"function_id":3,"version_id":4,"status":"active","action":"deploy","model_settings":{"reasoning_effort":"high"}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"endpoint":"","curl":""}`))
+	}))
+	defer srv.Close()
+	c := NewClient("fnp_x", WithBaseURL(srv.URL))
+	backup := "claude-haiku"
+	dep, err := c.Deployments.DeployWithOptions(3, 4, DeployOptions{
+		Model: "gpt-6.2-sol", BackupModel: &backup,
+		ModelSettings:       map[string]any{"reasoning_effort": "high"},
+		BackupModelSettings: map[string]any{"thinking_budget_tokens": 2000}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dep.ModelSettings["reasoning_effort"] != "high" {
+		t.Fatalf("the deployment should report its settings: %+v", dep)
+	}
+	if _, err := c.Deployments.DeployWithModel(3, 4, "gpt-4o", nil); err != nil {
+		t.Fatal(err)
+	}
+	ms, _ := bodies[0]["model_settings"].(map[string]any)
+	bs, _ := bodies[0]["backup_model_settings"].(map[string]any)
+	if ms["reasoning_effort"] != "high" || bs["thinking_budget_tokens"] != float64(2000) {
+		t.Fatalf("both sets of settings should be sent: %v", bodies[0])
+	}
+	if _, ok := bodies[1]["model_settings"]; ok {
+		t.Fatalf("a deploy that did not ask for settings must not send any: %v", bodies[1])
 	}
 }
 
