@@ -46,7 +46,7 @@ const RETRY_STATUSES = new Set([0, 408, 425, 429]);   // plus every 5xx
 /** Overridable in tests. */
 export const _tuning = { retryAfterMs: RETRY_AFTER_MS };
 
-const DEFAULT_BASE_URL = "https://uat.fnai.dev";
+const DEFAULT_BASE_URL = "https://app.fnai.dev";
 
 function env(name: string): string | undefined {
   const proc = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process;

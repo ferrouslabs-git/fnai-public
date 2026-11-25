@@ -283,7 +283,7 @@ func client() (*fnai.Client, error) {
 
 func cmdLogin(args []string) error {
 	fs := newFlagSet("login")
-	base := fs.String("base-url", "", "server URL (default: https://uat.fnai.dev until production launches)")
+	base := fs.String("base-url", "", "server URL (default: https://app.fnai.dev)")
 	token := fs.String("token", "", "paste your token instead of typing it interactively")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -515,7 +515,7 @@ func cmdRun(args []string) error {
 	fs := newFlagSet("run")
 	key := fs.String("key", os.Getenv("FNAI_INVOKE_KEY"), "the function's fnk_... invoke key")
 	input := fs.String("input", "{}", "JSON object, e.g. '{\"ticket_text\": \"...\"}'")
-	baseURL := fs.String("base-url", "", "server URL (default: https://uat.fnai.dev until production launches)")
+	baseURL := fs.String("base-url", "", "server URL (default: https://app.fnai.dev)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}

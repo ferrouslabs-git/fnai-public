@@ -35,9 +35,8 @@ Errors: FnaiError carries .status and .detail for API-level failures
 timeout → 504). An EXECUTION failure is not an exception — the platform
 returns 200 with status="failed"; check result.ok.
 
-The default address is UAT, https://uat.fnai.dev, until production
-(https://app.fnai.dev) launches; the default switches then (FNA-REQ-461).
-Pass base_url, or set FNAI_BASE_URL, to point somewhere else.
+The default address is production, https://app.fnai.dev (FNA-REQ-466).
+Pass base_url, or set FNAI_BASE_URL (for example https://uat.fnai.dev), to point somewhere else.
 """
 from __future__ import annotations
 
@@ -57,14 +56,14 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 # UAT until https://app.fnai.dev launches. Then this constant switches (FNA-REQ-461).
-DEFAULT_BASE_URL = "https://uat.fnai.dev"
+DEFAULT_BASE_URL = "https://app.fnai.dev"
 
 
 def resolve_base_url(explicit: str | None = None) -> str:
     """Explicit argument, then FNAI_BASE_URL, then the default."""
     return explicit or os.environ.get("FNAI_BASE_URL") or DEFAULT_BASE_URL
 
-__version__ = "0.13.0"
+__version__ = "0.14.0"
 DEFAULT_TIMEOUT_S = 90  # server caps execution at 60s; headroom for transport
 
 

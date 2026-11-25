@@ -44,7 +44,7 @@ export type { TraceOptions, TracingOptions } from "./tracing.js";
 
 type S = components["schemas"];
 
-export const VERSION = "0.13.0";
+export const VERSION = "0.14.0";
 const DEFAULT_TIMEOUT_MS = 90_000; // server caps execution at 60s; transport headroom
 
 export class FnaiError extends Error {
@@ -297,7 +297,7 @@ export class RunResult {
 
 /** UAT until production (https://app.fnai.dev) launches; the default switches then (FNA-REQ-461).
  *  Point elsewhere with FNAI_BASE_URL or baseUrl. */
-export const DEFAULT_BASE_URL = "https://uat.fnai.dev";
+export const DEFAULT_BASE_URL = "https://app.fnai.dev";
 
 function resolveBaseUrl(explicit?: string): string {
   const proc = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process;

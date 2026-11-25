@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.14.0 — 2026-11-25
+
+- **Changed: the default address is now production, `https://app.fnai.dev`.** Until now the SDKs and the `fn` tools connected to the UAT test server when you gave no address. Code that passes no address now reaches production. To use another server, pass `base_url` / `baseUrl` / `WithBaseURL`, set `FNAI_BASE_URL` (for example `https://uat.fnai.dev`), or run `fn login --base-url ...`. The order is unchanged: your argument, then `FNAI_BASE_URL`, then the default.
+
 ## 0.13.0 — 2026-11-25
 
 - **Fixed: `fnai.eval(..., version=N)` and `fn eval --version N` tested the wrong version (the TypeScript `version` and Go `Version` option had the same mistake and are fixed too).** The number you pass is the version *number* (2 for v2, a draft is fine), but it was sent as a version *id*, so the run pinned another function's version, or none, and sat "pending" for ten minutes. The SDK now looks the id up, and a number the function does not have is a clear error that lists the numbers it has. The server also refuses, at once, an experiment that pins a version that is not the function's (422).

@@ -2108,7 +2108,7 @@ class ResolveBaseUrl(unittest.TestCase):
         with unittest.mock.patch.dict(os.environ, {}, clear=False):
             os.environ.pop("FNAI_BASE_URL", None)
             self.assertEqual(resolve_base_url(None), DEFAULT_BASE_URL)
-            self.assertEqual(DEFAULT_BASE_URL, "https://uat.fnai.dev")
+            self.assertEqual(DEFAULT_BASE_URL, "https://app.fnai.dev")
             os.environ["FNAI_BASE_URL"] = "https://staging.fnai.dev"
             self.assertEqual(resolve_base_url(None), "https://staging.fnai.dev")
             self.assertEqual(resolve_base_url("https://explicit.example"), "https://explicit.example")
