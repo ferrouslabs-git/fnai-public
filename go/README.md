@@ -12,7 +12,7 @@ go get github.com/ferrouslabs-git/fnai-public/go
 
 ```go
 fn := fnai.NewFunction("doc_summarizer", "fnk_…",
-    fnai.WithBaseURL("https://staging.fnai.dev"))
+    fnai.WithBaseURL("https://app.fnai.dev"))
 result, err := fn.Run(map[string]any{"document": "…"})
 if err != nil { /* API-level failure: *fnai.Error with Status/Detail */ }
 if result.OK() {
@@ -25,7 +25,7 @@ if result.OK() {
 ## Management surface (`fnp_…` personal access token)
 
 ```go
-c := fnai.NewClient("fnp_…", fnai.WithBaseURL("https://staging.fnai.dev"))
+c := fnai.NewClient("fnp_…", fnai.WithBaseURL("https://app.fnai.dev"))
 
 fn, _ := c.Functions.Create(fnai.FunctionCreate{Slug: "summarizer", Name: "Summarizer",
     InputSchema: in, OutputSchema: out})

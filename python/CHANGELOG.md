@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.13.0 — 2026-11-25
 
 - **Fixed: `fnai.eval(..., version=N)` and `fn eval --version N` tested the wrong version (the TypeScript `version` and Go `Version` option had the same mistake and are fixed too).** The number you pass is the version *number* (2 for v2, a draft is fine), but it was sent as a version *id*, so the run pinned another function's version, or none, and sat "pending" for ten minutes. The SDK now looks the id up, and a number the function does not have is a clear error that lists the numbers it has. The server also refuses, at once, an experiment that pins a version that is not the function's (422).
 

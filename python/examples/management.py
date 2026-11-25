@@ -6,7 +6,7 @@ from fnai import Client, FnaiError
 
 c = Client(
     token="fnp_…",                        # your personal access token
-    base_url="https://staging.fnai.dev",  # or http://localhost:8000 in dev
+    base_url="https://app.fnai.dev",  # or http://localhost:8000 in dev
 )
 
 try:

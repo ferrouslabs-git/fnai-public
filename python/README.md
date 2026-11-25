@@ -26,7 +26,7 @@ from fnai import Function
 fn = Function(
     "doc_summarizer",
     api_key="fnk_…",                    # Deploy ▸ API keys → Mint
-    base_url="https://staging.fnai.dev",
+    base_url="https://app.fnai.dev",
 )
 
 # 1. Discover the contract (what the deployed version accepts/returns)
@@ -54,7 +54,7 @@ be revoked per token).
 ```python
 from fnai import Client
 
-c = Client(token="fnp_…", base_url="https://staging.fnai.dev")
+c = Client(token="fnp_…", base_url="https://app.fnai.dev")
 
 fn = c.functions.create(slug="summarizer", name="Summarizer",
                         input_schema=IN, output_schema=OUT)

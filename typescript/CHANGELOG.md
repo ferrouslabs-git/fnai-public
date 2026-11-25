@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.13.0 — 2026-11-25
 
 - **Fixed: `evaluate(..., { version })` tested the wrong version.** `version` is the version *number* (2 for v2) but was sent as a version *id*, so the run pinned another function's version, or none, and sat "pending". The id is now looked up, and an unknown number is a clear error that lists the numbers the function has.
 

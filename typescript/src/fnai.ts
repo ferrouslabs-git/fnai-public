@@ -9,14 +9,14 @@
  *
  *     import { Client, FnaiFunction } from "fnai";
  *     const fn = new FnaiFunction("doc_summarizer", { apiKey: "fnk_…",
- *                                                     baseUrl: "https://staging.fnai.dev" });
+ *                                                     baseUrl: "https://app.fnai.dev" });
  *     const result = await fn.run({ document: "…" });
  *     if (result.ok) console.log(result.output, result.meta.cost_usd);
  *
  * `Client` — the management surface, keyed by a personal access token
  * (fnp_…, minted in the app under avatar → API tokens):
  *
- *     const c = new Client({ token: "fnp_…", baseUrl: "https://staging.fnai.dev" });
+ *     const c = new Client({ token: "fnp_…", baseUrl: "https://app.fnai.dev" });
  *     const fn = await c.functions.create({ slug, name, input_schema, output_schema });
  *     const v = await c.functions.createVersion(fn.id, { snapshot, message: "v1" });
  *     await c.versions.playground(v.id, { input: { document: "…" } });
@@ -44,7 +44,7 @@ export type { TraceOptions, TracingOptions } from "./tracing.js";
 
 type S = components["schemas"];
 
-export const VERSION = "0.12.0";
+export const VERSION = "0.13.0";
 const DEFAULT_TIMEOUT_MS = 90_000; // server caps execution at 60s; transport headroom
 
 export class FnaiError extends Error {

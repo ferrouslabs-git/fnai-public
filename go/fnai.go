@@ -41,7 +41,7 @@ import (
 var nonAlnumRe = regexp.MustCompile(`[^a-z0-9]+`)
 
 // Version is the client version.
-const Version = "0.12.0"
+const Version = "0.13.0"
 
 const defaultTimeout = 90 * time.Second // server caps execution at 60s
 

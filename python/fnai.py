@@ -64,7 +64,7 @@ def resolve_base_url(explicit: str | None = None) -> str:
     """Explicit argument, then FNAI_BASE_URL, then the default."""
     return explicit or os.environ.get("FNAI_BASE_URL") or DEFAULT_BASE_URL
 
-__version__ = "0.12.0"
+__version__ = "0.13.0"
 DEFAULT_TIMEOUT_S = 90  # server caps execution at 60s; headroom for transport
 
 

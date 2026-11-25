@@ -27,7 +27,7 @@ import { Function } from "fnai";
 
 const fn = new Function("doc_summarizer", {
   apiKey: "fnk_…",                       // Deploy ▸ API keys → Mint
-  baseUrl: "https://staging.fnai.dev",
+  baseUrl: "https://app.fnai.dev",
 });
 const contract = await fn.contract();     // the deployed input/output schemas
 const result = await fn.run({ document: "…" });
@@ -43,7 +43,7 @@ failure is not an exception — check `result.ok`.
 ```ts
 import { Client } from "fnai";
 
-const c = new Client({ token: "fnp_…", baseUrl: "https://staging.fnai.dev" });
+const c = new Client({ token: "fnp_…", baseUrl: "https://app.fnai.dev" });
 
 const fn = await c.functions.create({ slug, name, input_schema, output_schema });
 const v = await c.functions.createVersion(fn.id, { snapshot, message: "v1" });

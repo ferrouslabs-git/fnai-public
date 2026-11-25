@@ -7,7 +7,7 @@ from fnai import Function, FnaiError
 fn = Function(
     "doc_summarizer",  # your function slug
     api_key="fnk_…",
-    base_url="https://staging.fnai.dev",  # or your hosted endpoint
+    base_url="https://app.fnai.dev",  # or your hosted endpoint
 )
 
 try:
